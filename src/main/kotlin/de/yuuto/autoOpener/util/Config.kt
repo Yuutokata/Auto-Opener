@@ -1,0 +1,29 @@
+package de.yuuto.autoOpener.util
+
+import de.yuuto.autoOpener.dataclass.ConfigData
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import java.nio.file.Path
+import kotlin.io.path.Path
+import kotlin.io.path.exists
+import kotlin.io.path.readText
+
+object Config {
+    private val configFile: Path by lazy { Path("./config.json") }
+    private val configData: ConfigData by lazy {
+        if (!configFile.exists()) {
+            throw IllegalStateException("Config file not found at ${configFile.toAbsolutePath()}")
+        }
+
+        try {
+            Json.decodeFromString(configFile.readText())
+        } catch (e: SerializationException) {
+            throw IllegalStateException("Failed to parse config file", e)
+        }
+    }
+
+    fun getHost(): String = configData.host
+    fun getPort(): Int = configData.port
+    fun getBotToken(): String = configData.tokens.bot
+    fun getUserToken(): String = configData.tokens.user
+}

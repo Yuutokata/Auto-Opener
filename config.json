@@ -1,0 +1,12 @@
+{
+  "host": "localhost",
+  "port": 5064,
+  "redis": {
+    "host": "localhost",
+    "port": 2073
+  },
+  "tokens": {
+    "bot": "sSMmhExqG6TRlbAmAtIjRJoml1Io5yf1gD58ZQMXQwgJwVj2M9LuSEvQEX2WbHp8",
+    "user": "XXZg4R0Ps4ivlVbceiJ8bqZtSESfB6AzQyuvKmKmZRdTaAMtt2jDgEUWqvFtkbYD"
+  }
+}
