@@ -60,7 +60,7 @@ java -jar build/libs/Auto-Opener-1.0-SNAPSHOT.jar
 
 1.  **Establish a websocket connection:**
     
-    Use a websocket client to connect to the server at `ws://localhost:[websocket_port]`.
+    Use a websocket client to connect to the server at `wss://localhost:[websocket_port]`.
     
 2.  **Authenticate the connection:**
     
