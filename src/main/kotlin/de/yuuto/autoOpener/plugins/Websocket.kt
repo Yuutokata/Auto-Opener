@@ -20,53 +20,62 @@ import kotlin.time.Duration.Companion.seconds
 val userSessions = ConcurrentHashMap<String, WebSocketSession>()
 
 fun Application.configureWebsockets() {
-    val logger = LoggerFactory.getLogger(Application::class.java) // Logger instance
-    val redissonClient = Redis.redissonClient // Assuming this function sets up your Redisson client
+    val logger = LoggerFactory.getLogger(Application::class.java)
+    val redissonClient = Redis.redissonClient
+
     install(WebSockets) {
         pingPeriod = 15.seconds
     }
-    routing {
-        authenticate("auth-jwt") { // Assuming you have JWT authentication configured
-            webSocket("/listen") {
-                val principal = call.principal<JWTPrincipal>()
-                val userId = principal?.payload?.getClaim("userId")?.asString()
-                    ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "No user ID"))
-                logger.debug("Listening on websocket for user $userId")
 
-                userSessions[userId] = this
+    routing {
+        authenticate("auth-jwt") {
+            webSocket("/listen/{userId}") {
+                // Extract user ID from JWT
+                val principal = call.principal<JWTPrincipal>()
+                val jwtUserId = principal?.payload?.getClaim("userId")?.asString()
+                    ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token"))
+
+                // Extract user ID from path parameter
+                val pathUserId = call.parameters["userId"]
+                    ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing user ID"))
+
+                // Validate path parameter matches JWT claim
+                if (jwtUserId != pathUserId) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "User ID mismatch"))
+                    return@webSocket
+                }
+
+                logger.debug("WebSocket connected for user $jwtUserId")
+                userSessions[jwtUserId] = this
+
                 try {
-                    val topic: RTopic = redissonClient.getTopic("user:$userId")
-                    // Define listenerId outside the launch block
+                    val topic: RTopic = redissonClient.getTopic("user:$jwtUserId")
                     var listenerId: Int = -1
 
-                    listenerId = topic.addListener(String::class.java) { channel, message ->
-                        // Launch a coroutine to call the suspending function
+                    listenerId = topic.addListener(String::class.java) { _, message ->
                         launch {
-                            logger.debug("Received message $message for user $userId")
                             try {
                                 val jsonMessage = Json.encodeToString(WebSocket("Keyword Ping", message))
                                 outgoing.send(Frame.Text(jsonMessage))
-
                             } catch (e: ClosedReceiveChannelException) {
-                                topic.removeListener(listenerId) // Now accessible
-                                userSessions.remove(userId)
-
+                                topic.removeListener(listenerId)
+                                userSessions.remove(jwtUserId)
                             } catch (e: Exception) {
                                 logger.error("Error sending message: ${e.message}")
                             }
                         }
                     }
 
-                    // Keep the connection alive until the client closes it
+                    // Keep connection alive
                     for (frame in incoming) {
                         val fool = null
                     }
 
-                    // Remove the listener when the client closes the connection
+                    // Cleanup
                     topic.removeListener(listenerId)
-                    userSessions.remove(userId)
+                    userSessions.remove(jwtUserId)
                 } catch (e: Exception) {
-                    logger.error("Error in websocket for user $userId", e) // Log websocket errors with exception
+                    logger.error("WebSocket error for user $jwtUserId", e)
                 }
             }
         }

@@ -3,11 +3,12 @@ package de.yuuto.autoOpener.plugins
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import de.yuuto.autoOpener.util.Config
+import io.ktor.http.auth.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
 import io.ktor.server.plugins.defaultheaders.*
-import javax.security.sasl.AuthenticationException
+import io.ktor.server.response.*
 
 fun Application.configureSecurity() {
     val secret = Config.getSecret()
@@ -28,8 +29,14 @@ fun Application.configureSecurity() {
                     JWTPrincipal(credential.payload)
                 } else null
             }
+            // Extract JWT from query parameter "token"
+            authHeader { call ->
+                call.request.queryParameters["token"]?.let { token ->
+                    HttpAuthHeader.Single("Bearer", token)
+                }
+            }
             challenge { _, _ ->
-                throw AuthenticationException("Invalid token")
+                call.respond("Authentication failed: Invalid or missing token")
             }
         }
     }

@@ -29,6 +29,7 @@ dependencies {
     implementation("io.ktor:ktor-server-metrics-micrometer")
     implementation("io.ktor:ktor-server-call-logging")
     implementation("org.slf4j:slf4j-simple:2.0.9")
+    implementation("com.auth0:java-jwt:4.4.0")
 }
 
 kotlin {
