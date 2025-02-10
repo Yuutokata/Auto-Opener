@@ -59,7 +59,7 @@ fun Application.configureWebsockets() {
 
                     // Keep the connection alive until the client closes it
                     for (frame in incoming) {
-                        fun foo() {}
+                        val fool = null
                     }
 
                     // Remove the listener when the client closes the connection

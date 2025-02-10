@@ -2,8 +2,7 @@ package de.yuuto.autoOpener.util
 
 import org.redisson.Redisson
 import org.redisson.api.RedissonClient
-import org.redisson.codec.Kryo5Codec
-import com.esotericsoftware.kryo.Kryo
+
 import org.redisson.codec.JsonJacksonCodec
 import org.redisson.config.Config
 
