@@ -24,6 +24,11 @@ object Config {
 
     fun getHost(): String = configData.host
     fun getPort(): Int = configData.port
+    fun getRedisHost(): String = configData.redis.host
+    fun getRedisPort(): Int = configData.redis.port
     fun getBotToken(): String = configData.tokens.bot
     fun getUserToken(): String = configData.tokens.user
+    fun getIssuer(): String = configData.jwt.issuer
+    fun getAudience(): String = configData.jwt.audience
+    fun getSecret(): String = configData.jwt.secret
 }

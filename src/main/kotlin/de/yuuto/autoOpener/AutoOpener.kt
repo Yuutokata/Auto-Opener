@@ -15,6 +15,8 @@ fun main() {
 fun Application.module() {
     configureMonitoring()
     configureSerialization()
-    // configureRedis()
     configureRouting()
+    configureSecurity()
+    configureWebsockets()
+    configureSecurityHeaders()
 }

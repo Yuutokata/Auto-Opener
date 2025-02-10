@@ -2,11 +2,16 @@
   "host": "localhost",
   "port": 5064,
   "redis": {
-    "host": "localhost",
-    "port": 2073
+    "host": "127.0.0.1",
+    "port": 6379
   },
   "tokens": {
     "bot": "sSMmhExqG6TRlbAmAtIjRJoml1Io5yf1gD58ZQMXQwgJwVj2M9LuSEvQEX2WbHp8",
     "user": "XXZg4R0Ps4ivlVbceiJ8bqZtSESfB6AzQyuvKmKmZRdTaAMtt2jDgEUWqvFtkbYD"
+  },
+  "jwt": {
+    "secret": "82a0e49d03b6840b1f3de6a6587a7a5c9853fca8b690e5c2b149aace2a0395d3aa6246e699591f61d63fd9a73ecaf0dc39fd85de3e9f683a48b9e58c43735d700a74bfa170ae7e1ddef3551e64ef5ddc98e6a92c482d0dccd82feac2b0e17bb1bb4301f7c3da1fd25ffce416fab44a1c78d59e5053c63b2eb43c6a801c4c2eb389cde6ee6c377954bfa715316112b7707a5c7088775944c2fc7de66491137046c5239ef643a833d6750b10f1525f811b0a4b72381fee08837f9b147aff5ee00870abea11e9b9670fba0afd4d15bdff8a959f7bf1b79b1bb90657841e584a608d0faa5abfcbd219f92d24e8910cc53f36724b08288d6dad6e42100b38dc405ab4",
+    "issuer": "auto-opener",
+    "audience": "chrome-extension"
   }
 }

@@ -8,7 +8,8 @@ data class ConfigData(
     val host: String,
     val port: Int,
     val redis: Redis,
-    val tokens: Tokens
+    val tokens: Tokens,
+    val jwt: JWT
 
 )
 
@@ -22,4 +23,11 @@ data class Redis(
 data class Tokens(
     val bot: String,
     val user: String
+)
+
+@Serializable
+data class JWT(
+    val issuer: String,
+    val audience: String,
+    val secret: String
 )
