@@ -75,7 +75,16 @@ fun Application.configureWebsockets() {
                     topic.removeListener(listenerId)
                     userSessions.remove(jwtUserId)
                 } catch (e: Exception) {
-                    logger.error("WebSocket error for user $jwtUserId", e)
+                    when (e) {
+                        is java.io.IOException -> {
+                            logger.debug("WebSocket disconnected for user $jwtUserId")
+                            userSessions.remove(jwtUserId)
+                        }
+                        else -> {
+                            logger.error("Unexpected error for user $jwtUserId: ${e.message}")
+                            userSessions.remove(jwtUserId)
+                        }
+                    }
                 }
             }
         }
