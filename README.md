@@ -1,3 +1,4 @@
+
 # Auto-Opener
 
 **Auto-Opener** is a Kotlin-based program that automates opening web pages or running applications based on triggers received via a WebSocket connection. It uses Redis for caching and Ktor for building the WebSocket server.
@@ -42,9 +43,9 @@
 
 3.  **Build the application:**
 
-    ```bash
-  ./gradlew build
-    ```
+```bash
+ ./gradlew build
+```
 
 4.  **Run the application:**
 
