@@ -1,3 +1,4 @@
+
 package de.yuuto.autoOpener.plugins
 
 import de.yuuto.autoOpener.dataclass.WebSocket
@@ -25,8 +26,8 @@ fun Application.configureWebsockets() {
 
     install(WebSockets) {
         pingPeriod = 15.seconds
-    }
 
+    }
     routing {
         authenticate("auth-jwt") {
             webSocket("/listen/{userId}") {
