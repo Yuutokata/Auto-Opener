@@ -31,4 +31,7 @@ object Config {
     fun getIssuer(): String = configData.jwt.issuer
     fun getAudience(): String = configData.jwt.audience
     fun getSecret(): String = configData.jwt.secret
+    fun getSubscriptionConnectionPoolSize(): Int = configData.subscriptionConnectionPoolSize
+    fun getSubscriptionConnectionMinimumIdleSize(): Int = configData.subscriptionConnectionMinimumIdleSize
+    fun getConnectionPoolSize(): Int = configData.connectionPoolSize
 }

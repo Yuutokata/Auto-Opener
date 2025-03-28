@@ -9,8 +9,10 @@ data class ConfigData(
     val port: Int,
     val redis: Redis,
     val tokens: Tokens,
-    val jwt: JWT
-
+    val jwt: JWT,
+    val subscriptionConnectionPoolSize: Int,
+    val subscriptionConnectionMinimumIdleSize: Int,
+    val connectionPoolSize: Int
 )
 
 @Serializable

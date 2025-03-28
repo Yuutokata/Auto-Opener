@@ -1,92 +1,53 @@
 package de.yuuto.autoOpener.plugins
 
-import de.yuuto.autoOpener.dataclass.WebSocket
-import de.yuuto.autoOpener.util.Redis
+import de.yuuto.autoOpener.webSocketManager
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import org.redisson.api.RTopic
-import org.slf4j.LoggerFactory
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 
-val userSessions = ConcurrentHashMap<String, WebSocketSession>()
-
 fun Application.configureWebsockets() {
-    val logger = LoggerFactory.getLogger(Application::class.java)
-    val redissonClient = Redis.redissonClient
-
     install(WebSockets) {
-        pingPeriod = 15.seconds
+        pingPeriod = 25.seconds
+        timeout = 45.seconds
+        maxFrameSize = 65536
+        masking = false
     }
 
     routing {
         authenticate("auth-jwt") {
             webSocket("/listen/{userId}") {
-                // Extract user ID from JWT
                 val principal = call.principal<JWTPrincipal>()
                 val jwtUserId = principal?.payload?.getClaim("userId")?.asString()
-                    ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token"))
-
-                // Extract user ID from path parameter
                 val pathUserId = call.parameters["userId"]
-                    ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing user ID"))
 
-                // Validate path parameter matches JWT claim
-                if (jwtUserId != pathUserId) {
-                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "User ID mismatch"))
+                validateSession(jwtUserId, pathUserId)?.let { reason ->
+                    close(reason)
                     return@webSocket
                 }
 
-                logger.debug("WebSocket connected for user $jwtUserId")
-                userSessions[jwtUserId] = this
-
                 try {
-                    val topic: RTopic = redissonClient.getTopic("user:$jwtUserId")
-                    var listenerId: Int = -1
-
-                    listenerId = topic.addListener(String::class.java) { _, message ->
-                        launch {
-                            try {
-                                val jsonMessage = Json.encodeToString(WebSocket("Keyword Ping", message))
-                                outgoing.send(Frame.Text(jsonMessage))
-                            } catch (e: ClosedReceiveChannelException) {
-                                topic.removeListener(listenerId)
-                                userSessions.remove(jwtUserId)
-                            } catch (e: Exception) {
-                                logger.error("Error sending message: ${e.message}")
-                            }
-                        }
-                    }
-
-                    // Keep connection alive
-                    for (frame in incoming) {
-                        val fool = null
-                    }
-
-                    // Cleanup
-                    topic.removeListener(listenerId)
-                    userSessions.remove(jwtUserId)
+                    webSocketManager.handleSession(this, jwtUserId!!)
                 } catch (e: Exception) {
-                    when (e) {
-                        is java.io.IOException -> {
-                            logger.debug("WebSocket disconnected for user $jwtUserId")
-                            userSessions.remove(jwtUserId)
-                        }
-                        else -> {
-                            logger.error("Unexpected error for user $jwtUserId: ${e.message}")
-                            userSessions.remove(jwtUserId)
-                        }
-                    }
+                    application.log.error("WebSocket error: ${e.message}", e)
+                    close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
                 }
             }
         }
+    }
+
+    webSocketManager.monitorConnections()
+}
+
+private fun validateSession(jwtUserId: String?, pathUserId: String?): CloseReason? {
+    return when {
+        jwtUserId == null || pathUserId == null -> CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid credentials")
+
+        jwtUserId != pathUserId -> CloseReason(CloseReason.Codes.VIOLATED_POLICY, "User ID mismatch")
+
+        else -> null
     }
 }
