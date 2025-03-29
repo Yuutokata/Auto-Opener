@@ -8,6 +8,7 @@ data class ConfigData(
     val host: String,
     val port: Int,
     val redis: Redis,
+    val mongodb: MongoDB,
     val tokens: Tokens,
     val jwt: JWT,
     val subscriptionConnectionPoolSize: Int,
@@ -22,9 +23,14 @@ data class Redis(
 )
 
 @Serializable
+data class MongoDB(
+    val uri: String,
+    val db: String
+)
+
+@Serializable
 data class Tokens(
-    val bot: String,
-    val user: String
+    val bot: List<String>
 )
 
 @Serializable

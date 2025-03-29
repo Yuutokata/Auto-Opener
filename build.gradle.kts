@@ -28,7 +28,11 @@ dependencies {
     implementation("io.ktor:ktor-server-metrics-micrometer")
     implementation("io.ktor:ktor-server-call-logging")
     implementation("com.auth0:java-jwt:4.4.0")
+
+    implementation("org.litote.kmongo:kmongo:5.2.0")
+    implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
 }
+
 
 kotlin {
     jvmToolchain(21)

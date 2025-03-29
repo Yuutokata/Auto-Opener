@@ -16,27 +16,45 @@ fun Application.configureSecurity() {
     val audience = Config.getAudience()
 
     authentication {
-        jwt("auth-jwt") {
-            realm = "WebSocket Service"
+        jwt("auth-service") {
+            realm = "Service Access"
             verifier(
-                JWT.require(Algorithm.HMAC256(secret))
-                    .withAudience(audience)
-                    .withIssuer(issuer)
-                    .build()
+                JWT.require(Algorithm.HMAC256(secret)).withAudience(audience).withIssuer(issuer).build()
             )
             validate { credential ->
-                if (credential.payload.audience.contains(audience)) {
+                val tokenClaim = credential.payload.getClaim("token").asString()
+                if (credential.payload.audience.contains(audience) && credential.payload.getClaim("role")
+                        .asString() == "service" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(Regex("^[a-zA-Z0-9]{32,64}$"))
+                ) {
                     JWTPrincipal(credential.payload)
-                } else null
+                } else false
             }
-            // Extract JWT from query parameter "token"
+            challenge { _, _ ->
+                call.respond("Authentication failed: Invalid service token")
+                return@challenge
+            }
+        }
+
+        jwt("auth-user") {
+            realm = "WebSocket Access"
+            verifier(
+                JWT.require(Algorithm.HMAC256(secret)).withAudience(audience).withIssuer(issuer).build()
+            )
+            validate { credential ->
+                val tokenClaim = credential.payload.getClaim("token").asString()
+                if (credential.payload.audience.contains(audience) && credential.payload.getClaim("role")
+                        .asString() == "user" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(Regex("^\\d{15,20}$"))
+                ) {
+                    JWTPrincipal(credential.payload)
+                } else false
+            }
             authHeader { call ->
-                call.request.queryParameters["token"]?.let { token ->
+                call.request.headers["Sec-WebSocket-Protocol"]?.let { token ->
                     HttpAuthHeader.Single("Bearer", token)
                 }
             }
             challenge { _, _ ->
-                call.respond("Authentication failed: Invalid or missing token")
+                call.respond("Authentication failed: Invalid user token")
             }
         }
     }
