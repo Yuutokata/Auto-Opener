@@ -1,5 +1,6 @@
 package de.yuuto.autoOpener.util
 
+import de.yuuto.autoOpener.dataclass.ConnectionMetrics
 import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
@@ -9,40 +10,49 @@ import kotlinx.io.IOException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
-import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.pow
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
-class WebSocketManager(private val redis: RedisManager) {
+class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     private val logger = LoggerFactory.getLogger(WebSocketManager::class.java)
-    private val activeConnections = ConcurrentHashMap<String, WebSocketSession>()
-    private val connectionTimestamps = ConcurrentHashMap<String, Long>()
-    private val heartbeatIntervals = ConcurrentHashMap<String, Job>()
+    internal val activeConnections = ConcurrentHashMap<String, WebSocketSession>()
+    internal val connectionTimestamps = ConcurrentHashMap<String, Long>()
+    internal val connectionMetrics = ConcurrentHashMap<String, ConnectionMetrics>()
 
-    private val pingInterval = 25.seconds
+    private lateinit var redis: RedisManager
+
+    init {
+        CoroutineScope(dispatcherProvider.monitoring).launch {
+            while (isActive) {
+                logConnectionStats()
+                delay(60.seconds)
+            }
+        }
+    }
+
+    fun setRedisManager(redisManager: RedisManager) {
+        this.redis = redisManager
+    }
+
     private val connectionTimeout = 2.minutes
-    private val maxRetryAttempts = 5
-    private val backoffBase = 1000L
 
-    suspend fun handleSession(session: WebSocketSession, userId: String) {
-        val connectionId = "${userId}_${UUID.randomUUID()}"
-        val retryCounter = AtomicInteger(0)
+    fun shutdown() {
+        activeConnections.clear()
+        connectionTimestamps.clear()
+        connectionMetrics.clear()
 
+        logger.info("WebSocketManager resources released")
+    }
+
+    suspend fun handleSession(session: WebSocketSession, userId: String, connectionId: String) {
         try {
             registerConnection(connectionId, session, userId)
-            startHeartbeat(connectionId, session, userId)
-            processIncomingMessages(connectionId, userId, retryCounter)
+            processIncomingMessages(connectionId, userId)
         } catch (e: ClosedReceiveChannelException) {
             logger.info("[$connectionId] Graceful disconnect")
         } catch (e: IOException) {
-            if (e.message?.contains("Ping timeout") == true) {
-                logger.info("[$connectionId] | $userId Client ping timeout - assuming disconnected")
-            } else {
-                logger.error("[$connectionId] | $userId IO error: ${e.message}", e)
-            }
+            logger.error("[$connectionId] | $userId IO error: ${e.message}", e)
         } catch (e: Exception) {
             logger.error("[$connectionId] | $userId Unexpected error: ${e.message}", e)
         } finally {
@@ -50,56 +60,36 @@ class WebSocketManager(private val redis: RedisManager) {
         }
     }
 
-    private fun registerConnection(
+    private suspend fun registerConnection(
         connectionId: String, session: WebSocketSession, userId: String
-    ) {
+    ) = withContext(dispatcherProvider.websocket) {
         activeConnections[connectionId] = session
         connectionTimestamps[connectionId] = System.currentTimeMillis()
         redis.storeSession(userId, connectionId)
         logger.info("[$connectionId] | $userId New connection registered")
     }
 
-    private fun startHeartbeat(connectionId: String, session: WebSocketSession, userId: String) {
-        heartbeatIntervals[connectionId] = CoroutineScope(Dispatchers.IO).launch {
-            while (isActive) {
-                try {
-                    session.outgoing.send(Frame.Ping(ByteArray(0)))
-                    delay(pingInterval)
-                } catch (e: IOException) {
-                    if (e.message?.contains("Ping timeout") == true) {
-                        logger.info("[$connectionId] | $userId Ping timeout detected")
-                    } else {
-                        logger.debug("[$connectionId] | $userId IO error in heartbeat: ${e.message}")
-                    }
-                    cancel()
-                    break
-                } catch (e: Exception) {
-                    logger.debug("[$connectionId] | $userId Heartbeat failed: ${e.message}")
-                    cancel()
-                    break
-                }
-            }
-        }
-    }
-
     private suspend fun processIncomingMessages(
-        connectionId: String, userId: String, retryCounter: AtomicInteger
+        connectionId: String, userId: String
     ) {
         val topic = redis.getTopic(userId)
         var listenerId = -1
 
         try {
             listenerId = topic.addListener(String::class.java) { _, message ->
-                CoroutineScope(Dispatchers.IO).launch {
-                    handleIncomingMessage(connectionId, userId, message, retryCounter)
+                CoroutineScope(dispatcherProvider.websocket).launch {
+                    handleIncomingMessage(connectionId, userId, message)
                 }
             }
 
             for (frame in activeConnections[connectionId]?.incoming ?: return) {
                 when (frame) {
-                    is Frame.Pong -> updateActivityTimestamp(connectionId)
+                    is Frame.Pong -> {
+                        updateActivityTimestamp(connectionId)
+                        logger.info("[$connectionId] | $userId Pong received")
+                    }
                     is Frame.Text -> handleClientMessage(connectionId, frame)
-                    else -> logger.debug("[$connectionId] | $userId Unhandled frame type")
+                    else -> logger.info("[$connectionId] | $userId Unhandled frame type")
                 }
             }
         } finally {
@@ -107,93 +97,115 @@ class WebSocketManager(private val redis: RedisManager) {
         }
     }
 
-    private suspend fun handleIncomingMessage(
-        connectionId: String, userId: String, message: String, retryCounter: AtomicInteger
+    internal suspend fun handleIncomingMessage(
+        connectionId: String, userId: String, message: String
     ) {
         if (!validateMessageFormat(message)) {
             logger.error("[$connectionId] | $userId Invalid message format: ${message.take(50)}")
             return
         }
 
-        withRetry(retryCounter, userId) {
-            sendMessageToClient(
-                connectionId, Json.encodeToString(WebSocketMessage("Keyword Ping", message)), userId
-            )
-            logger.debug("[$connectionId] | $userId Message forwarded successfully")
-        }
+        sendMessageToClient(
+            connectionId, Json.encodeToString(WebSocketMessage("Keyword Ping", message)), userId
+        )
+        logger.debug("[$connectionId] | $userId Message forwarded successfully")
     }
 
-    private suspend fun withRetry(
-        retryCounter: AtomicInteger, userId: String, block: suspend () -> Unit
-    ) {
-        try {
-            block()
-            retryCounter.set(0)
-        } catch (e: Exception) {
-            if (retryCounter.get() >= maxRetryAttempts) {
-                logger.error("Max retries reached for message delivery to ${userId}: ${e.message}")
+    private suspend fun handleClientMessage(connectionId: String, frame: Frame.Text) =
+        withContext(dispatcherProvider.websocket) {
+            val text = frame.readText()
+            logger.debug("[$connectionId] Received client message: ${text.take(50)}")
+        }
+
+    private suspend fun sendMessageToClient(connectionId: String, message: String, userId: String) =
+        withContext(dispatcherProvider.websocket) {
+            val session = activeConnections[connectionId] ?: run {
+                logger.warn("[$connectionId] | $userId Attempted send to closed connection")
+                throw IllegalStateException("Connection closed")
+            }
+
+            try {
+                session.outgoing.send(Frame.Text(message))
+                updateActivityTimestamp(connectionId)
+                logger.debug("[{}] | {} Successfully sent message to client", connectionId, userId)
+            } catch (e: ClosedSendChannelException) {
+                logger.warn("[$connectionId] | $userId Send failed - channel closed")
                 throw e
             }
-            val delay = backoffBase * 2.0.pow(retryCounter.getAndIncrement().toDouble()).toLong()
-            delay(delay)
-            withRetry(retryCounter, userId, block)
         }
-    }
-
-    private fun handleClientMessage(connectionId: String, frame: Frame.Text) {
-        val text = frame.readText()
-        logger.debug("[$connectionId] Received client message: ${text.take(50)}")
-    }
-
-    private suspend fun sendMessageToClient(connectionId: String, message: String, userId: String) {
-        val session = activeConnections[connectionId] ?: run {
-            logger.warn("[$connectionId] | $userId Attempted send to closed connection")
-            throw IllegalStateException("Connection closed")
-        }
-
-        try {
-            session.outgoing.send(Frame.Text(message))
-            updateActivityTimestamp(connectionId)
-            logger.debug("[{}] | {} Successfully sent message to client", connectionId, userId)
-        } catch (e: ClosedSendChannelException) {
-            logger.warn("[$connectionId] | $userId Send failed - channel closed")
-            throw e
-        }
-    }
 
     private fun updateActivityTimestamp(connectionId: String) {
         connectionTimestamps[connectionId] = System.currentTimeMillis()
     }
 
-    private fun validateMessageFormat(message: String): Boolean {
-        return message.run {
-            length < 2048 && matches(Regex("^https?://([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,6}(/\\S*)?$"))
+    private suspend fun validateMessageFormat(message: String): Boolean {
+        return withContext(dispatcherProvider.processing) {
+            message.run {
+                length < 2048 && matches(Regex("^https?://([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,6}(/\\S*)?$"))
+            }
         }
     }
 
-    private fun cleanupConnection(connectionId: String, userId: String) {
-        heartbeatIntervals[connectionId]?.cancel()
-        activeConnections.remove(connectionId)
-        connectionTimestamps.remove(connectionId)
-        redis.removeSession(userId, connectionId)
-        logger.info("[$connectionId] | $userId Connection cleaned up")
+    internal fun extractUserId(connectionId: String): String {
+        return connectionId.split("_").firstOrNull() ?: run {
+            logger.error("[$connectionId] Invalid connection ID format")
+            "unknown"
+        }
     }
 
+    internal suspend fun cleanupConnection(connectionId: String, userId: String) =
+        withContext(dispatcherProvider.websocket) {
+            activeConnections.remove(connectionId)
+            connectionTimestamps.remove(connectionId)
+            redis.removeSession(userId, connectionId)
+            connectionMetrics.remove(connectionId)
+            redis.removeSession(userId, connectionId)
+            redis.stopMonitoringSubscription(userId)
+            logger.info("[$connectionId] | $userId Connection cleaned up")
+        }
+
     fun monitorConnections() {
-        CoroutineScope(Dispatchers.IO).launch {
-            while (true) {
-                val now = System.currentTimeMillis()
-                connectionTimestamps.forEach { (connectionId, timestamp) ->
-                    if (now - timestamp > connectionTimeout.inWholeMilliseconds) {
-                        logger.warn("[$connectionId] Inactive connection terminated")
-                        activeConnections[connectionId]?.close(
-                            CloseReason(
-                                CloseReason.Codes.VIOLATED_POLICY, "Connection timeout"
+        CoroutineScope(dispatcherProvider.monitoring).launch {
+            while (isActive) {
+                try {
+                    val now = System.currentTimeMillis()
+                    connectionTimestamps.forEach { (connectionId, timestamp) ->
+                        if (now - timestamp > connectionTimeout.inWholeMilliseconds) {
+                            logger.warn("[$connectionId] Inactive connection terminated")
+                            activeConnections[connectionId]?.close(
+                                CloseReason(
+                                    CloseReason.Codes.VIOLATED_POLICY, "Connection timeout"
+                                )
                             )
-                        )
+                            cleanupConnection(connectionId, extractUserId(connectionId))
+                        }
                     }
+                } catch (e: Exception) {
+                    logger.error("Error in connection monitoring: ${e.message}", e)
+                } finally {
+                    delay(30.seconds)
                 }
-                delay(30.seconds)
+            }
+        }
+    }
+
+    fun logConnectionStats() {
+        CoroutineScope(dispatcherProvider.monitoring).launch {
+            if (connectionMetrics.isEmpty()) {
+                logger.debug("No connection metrics to report")
+                return@launch
+            }
+
+            connectionMetrics.forEach { (id, metrics) ->
+                val userId = extractUserId(id)
+                logger.info(
+                    "[METRICS|{}|{}] Latency: {}ms | Invalid responses: {} | Sequence mismatches: {}",
+                    id,
+                    userId,
+                    metrics.networkLatency.get(),
+                    metrics.invalidResponses.get(),
+                    metrics.sequenceMismatches.get()
+                )
             }
         }
     }

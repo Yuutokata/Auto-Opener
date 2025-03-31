@@ -13,7 +13,12 @@ data class ConfigData(
     val jwt: JWT,
     val subscriptionConnectionPoolSize: Int,
     val subscriptionConnectionMinimumIdleSize: Int,
-    val connectionPoolSize: Int
+    val connectionPoolSize: Int,
+    val maxMissedPongs: Int,
+    val healthCheckInterval: Int,
+    val heartBeatTimeout: Int,
+    val heartBeatInterval: Int,
+    val maxRetryAttempts: Int
 )
 
 @Serializable

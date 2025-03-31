@@ -4,21 +4,24 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import de.yuuto.autoOpener.dataclass.TokenRequest
 import de.yuuto.autoOpener.util.Config
+import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.MongoClient
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.concurrent.TimeUnit
 
 
-fun Route.generateToken() {
+fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: MongoClient) {
     val logger = LoggerFactory.getLogger("TokenRoute")
     val secret = Config.getSecret()
     val issuer = Config.getIssuer()
     val audience = Config.getAudience()
+
     post("/token") {
         try {
             val request = call.receive<TokenRequest>()
@@ -30,7 +33,7 @@ fun Route.generateToken() {
                 return@post
             }
 
-            if (role == "user") {
+            if (role == "userssss") {
                 if (!token.matches(Regex("^\\d{15,20}$"))) {
                     call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid User ID format"))
                     return@post
@@ -38,13 +41,16 @@ fun Route.generateToken() {
             }
 
             if (role == "user") {
-                val mongoClient = MongoClient.getInstance()
 
-                var userExists = mongoClient.userExistsInCache(token)
+                val userExists = withContext(dispatcherProvider.database) {
+                    var exists = mongoClient.userExistsInCache(token)
 
-                if (!userExists) {
-                    val allUsers = mongoClient.getAllUsers()
-                    userExists = allUsers.any { it.id == token }
+                    if (!exists) {
+                        val allUsers = mongoClient.getAllUsers()
+                        exists = allUsers.any { it.id == token }
+                    }
+
+                    exists
                 }
 
                 if (!userExists) {
@@ -54,28 +60,27 @@ fun Route.generateToken() {
                     )
                     return@post
                 }
-                val token = JWT.create()
-                    .withAudience(audience)
-                    .withIssuer(issuer)
-                    .withClaim("token", token)
-                    .withClaim("role", role)
-                    .withExpiresAt(Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(1)))
-                    .sign(Algorithm.HMAC256(secret))
-
-                call.respond(hashMapOf("token" to token))
             }
 
             if (role == "service") {
-                val token = JWT.create()
-                    .withAudience(audience)
-                    .withIssuer(issuer)
-                    .withClaim("token", token)
-                    .withClaim("role", role)
+                val validToken = withContext(dispatcherProvider.processing) {
+                    Config.getBotToken().any { it == token }
+                }
+
+                if (!validToken) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "Service token not found in database"))
+                    return@post
+                }
+            }
+
+            val jwtToken = withContext(dispatcherProvider.processing) {
+                JWT.create().withAudience(audience).withIssuer(issuer).withClaim("token", token).withClaim("role", role)
                     .withExpiresAt(Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(1)))
                     .sign(Algorithm.HMAC256(secret))
-
-                call.respond(hashMapOf("token" to token))
             }
+
+            call.respond(hashMapOf("token" to jwtToken))
+
         } catch (e: ContentTransformationException) {
             logger.error("Invalid token request format: ${e.message}")
             call.respond(
@@ -85,8 +90,7 @@ fun Route.generateToken() {
         } catch (e: Exception) {
             logger.error("Error processing token request", e)
             call.respond(
-                HttpStatusCode.InternalServerError,
-                mapOf("error" to (e.message ?: "Unknown error occurred"))
+                HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "Unknown error occurred"))
             )
         }
     }

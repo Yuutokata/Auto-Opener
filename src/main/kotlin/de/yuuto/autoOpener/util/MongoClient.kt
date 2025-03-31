@@ -5,6 +5,7 @@ import de.yuuto.autoOpener.dataclass.SyncResult
 import de.yuuto.autoOpener.dataclass.User
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.litote.kmongo.coroutine.coroutine
 import org.litote.kmongo.eq
 import org.litote.kmongo.reactivestreams.KMongo
@@ -12,8 +13,7 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.system.measureTimeMillis
 
-
-class MongoClient private constructor() {
+class MongoClient(private val dispatcherProvider: DispatcherProvider) {
     private val logger = LoggerFactory.getLogger(MongoClient::class.java)
     private val client = KMongo.createClient(Config.getMongoDBUri()).also {
         logger.info("MongoDB client created with URI: ${maskConnectionString(Config.getMongoDBUri())}")
@@ -29,16 +29,14 @@ class MongoClient private constructor() {
     private val cacheMutex = Mutex()
     private var cacheInitialized = false
 
-    suspend fun synchronizeUsers(incomingUsers: List<User>): SyncResult {
+    suspend fun synchronizeUsers(incomingUsers: List<User>): SyncResult = withContext(dispatcherProvider.database) {
         logger.debug("Starting user synchronization with ${incomingUsers.size} incoming users")
         val currentUsers = getAllUsersFromDB()
         val currentUserIds = currentUsers.map { it.id }.toSet()
         val incomingUserIds = incomingUsers.map { it.id }.toSet()
 
         // Check for duplicate IDs in incoming users
-        val duplicateIds = incomingUsers.groupBy { it.id }
-            .filter { it.value.size > 1 }
-            .keys
+        val duplicateIds = incomingUsers.groupBy { it.id }.filter { it.value.size > 1 }.keys
 
         if (duplicateIds.isNotEmpty()) {
             logger.warn("Found duplicate user IDs in incoming data: $duplicateIds")
@@ -61,21 +59,21 @@ class MongoClient private constructor() {
 
         val unchangedCount = currentUserIds.size - removedCount
 
-        return SyncResult(
+        SyncResult(
             added = addedCount, removed = removedCount, unchanged = unchangedCount
         )
     }
 
-    suspend fun getAllUsers(): List<User> {
+    suspend fun getAllUsers(): List<User> = withContext(dispatcherProvider.processing) {
         if (!cacheInitialized) {
             logger.debug("Cache not initialized, refreshing cache")
-            return refreshCache()
+            return@withContext refreshCache()
         }
         logger.debug("Returning ${userCache.size} users from cache")
-        return userCache.values.toList()
+        userCache.values.toList()
     }
 
-    private suspend fun getAllUsersFromDB(): List<User> {
+    private suspend fun getAllUsersFromDB(): List<User> = withContext(dispatcherProvider.database) {
         logger.debug("Fetching all users from database")
         var userList: List<User> = emptyList()
         try {
@@ -87,12 +85,12 @@ class MongoClient private constructor() {
             logger.error("Error fetching users from database", e)
             throw e
         }
-        return userList
+        userList
     }
 
-    suspend fun refreshCache(): List<User> {
+    suspend fun refreshCache(): List<User> = withContext(dispatcherProvider.database) {
         logger.debug("Starting cache refresh")
-        return cacheMutex.withLock {
+        cacheMutex.withLock {
             val execTime = measureTimeMillis {
                 try {
                     val users = getAllUsersFromDB()
@@ -113,27 +111,30 @@ class MongoClient private constructor() {
         }
     }
 
-    suspend fun userExists(userId: String): Boolean {
+    suspend fun userExists(userId: String): Boolean = withContext(dispatcherProvider.processing) {
         // Check cache first if initialized
         if (cacheInitialized && userCache.containsKey(userId)) {
             logger.debug("User $userId found in cache")
-            return true
+            return@withContext true
         }
 
         // Otherwise check database
-        logger.debug("Checking if user $userId exists in database")
-        val exists = try {
-            usersCollection.countDocuments(User::id eq userId) > 0
-        } catch (e: Exception) {
-            logger.error("Error checking if user $userId exists", e)
-            throw e
+        withContext(dispatcherProvider.database) {
+            logger.debug("Checking if user $userId exists in database")
+            try {
+                val exists = usersCollection.countDocuments(User::id eq userId) > 0
+                logger.debug("User $userId exists in database: $exists")
+                exists
+            } catch (e: Exception) {
+                logger.error("Error checking if user $userId exists", e)
+                throw e
+            }
         }
-        logger.debug("User $userId exists in database: $exists")
-        return exists
     }
 
-    suspend fun addUser(user: User): Boolean {
+    suspend fun addUser(user: User): Boolean = withContext(dispatcherProvider.database) {
         val options = ReplaceOptions().upsert(true)
+        var success = false
 
         logger.debug("Attempting to add/update user with ID: ${user.id}")
         try {
@@ -146,7 +147,7 @@ class MongoClient private constructor() {
                     result.upsertedId
                 )
 
-                val success = result.modifiedCount > 0 || result.upsertedId != null
+                success = result.modifiedCount > 0 || result.upsertedId != null
 
                 if (success) {
                     cacheMutex.withLock {
@@ -156,41 +157,43 @@ class MongoClient private constructor() {
                 } else {
                     logger.error("Failed to add user ${user.id} to database")
                 }
-
-                return success
             }
             logger.debug("Add user operation for ${user.id} completed in ${execTime}ms")
+            success
         } catch (e: Exception) {
             logger.error("Exception occurred while adding user ${user.id}", e)
             throw e
         }
     }
 
-    suspend fun removeUser(userId: String): Pair<Boolean, String> {
+    suspend fun removeUser(userId: String): Pair<Boolean, String> = withContext(dispatcherProvider.database) {
         logger.debug("Attempting to remove user with ID: $userId")
         // First check if user exists
         if (!userExists(userId)) {
             logger.warn("Attempted to remove non-existent user: $userId")
-            return Pair(false, "User does not exist")
+            return@withContext Pair(false, "User does not exist")
         }
+
+        var result: Pair<Boolean, String> = Pair(false, "Unknown error")
 
         try {
             val execTime = measureTimeMillis {
-                val result = usersCollection.deleteOne(User::id eq userId)
-                val success = result.deletedCount > 0
+                val deleteResult = usersCollection.deleteOne(User::id eq userId)
+                val success = deleteResult.deletedCount > 0
 
                 if (success) {
                     cacheMutex.withLock {
                         userCache.remove(userId)
                     }
                     logger.info("User $userId removed successfully")
-                    return Pair(true, "User removed successfully")
+                    result = Pair(true, "User removed successfully")
                 } else {
                     logger.error("Failed to remove user $userId despite existing check")
-                    return Pair(false, "Database operation failed")
+                    result = Pair(false, "Database operation failed")
                 }
             }
             logger.debug("Remove user operation for $userId completed in ${execTime}ms")
+            result
         } catch (e: Exception) {
             logger.error("Exception occurred while removing user $userId", e)
             throw e
@@ -215,43 +218,14 @@ class MongoClient private constructor() {
         return uri.replace(regex, "$1$2:****@")
     }
 
-    companion object {
-        private var instance: MongoClient? = null
-        private val instanceMutex = Mutex()
-        private val logger = LoggerFactory.getLogger(MongoClient::class.java)
-
-        suspend fun getInstance(): MongoClient {
-            if (instance == null) {
-                logger.debug("Creating new MongoClient instance")
-                instanceMutex.withLock {
-                    if (instance == null) {
-                        try {
-                            instance = MongoClient()
-                            logger.info("MongoClient instance created successfully")
-                        } catch (e: Exception) {
-                            logger.error("Failed to create MongoClient instance", e)
-                            throw e
-                        }
-                    }
-                }
-            }
-            return instance!!
-        }
-
-        suspend fun checkConnection(): Boolean {
-            val client = getInstance()
-            try {
-                logger.debug("Performing MongoDB connection health check")
-                // Simple ping operation to check connectivity
-                val execTime = measureTimeMillis {
-                    client.database.runCommand<org.bson.Document>(org.bson.Document("ping", 1))
-                }
-                logger.debug("MongoDB connection check successful, took ${execTime}ms")
-                return true
-            } catch (e: Exception) {
-                logger.error("MongoDB connection check failed", e)
-                return false
-            }
+    fun close() {
+        logger.info("Closing MongoDB client connection...")
+        try {
+            client.close()
+            logger.info("MongoDB client connection closed successfully")
+        } catch (e: Exception) {
+            logger.error("Error closing MongoDB client connection: ${e.message}", e)
         }
     }
+
 }

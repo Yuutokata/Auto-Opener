@@ -1,21 +1,26 @@
 package de.yuuto.autoOpener.plugins
 
-import de.yuuto.autoOpener.webSocketManager
+import de.yuuto.autoOpener.util.DispatcherProvider
+import de.yuuto.autoOpener.util.RedisManager
+import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
-import io.ktor.util.logging.Logger
-
+import io.ktor.util.logging.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
-import kotlin.math.log
+import java.util.*
 import kotlin.time.Duration.Companion.seconds
 
 
-fun Application.configureWebsockets() {
-    val logger = LoggerFactory.getLogger("WebSocketRoute")
+fun Application.configureWebsockets(
+    dispatcherProvider: DispatcherProvider, redisManager: RedisManager, webSocketManager: WebSocketManager
+) {
+    val logger = LoggerFactory.getLogger("WebSocketLogger")
     install(WebSockets) {
         pingPeriod = 25.seconds
         timeout = 45.seconds
@@ -26,49 +31,71 @@ fun Application.configureWebsockets() {
     routing {
         authenticate("auth-user") {
             webSocket("/listen/{userId}") {
+
                 val principal = call.principal<JWTPrincipal>()
                 val jwtUserId = principal?.payload?.getClaim("token")?.asString()
                 val pathUserId = call.parameters["userId"]
                 val role = principal?.payload?.getClaim("role")?.asString()
+
+                logger.debug("JWT User ID: $jwtUserId, Path User ID: $pathUserId, Role: $role")
+
+                val connectionId = "${jwtUserId}_${UUID.randomUUID()}"
+
+                redisManager.monitorSubscription(jwtUserId.toString(), connectionId)
 
                 if (role != "user") {
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role"))
                     return@webSocket
                 }
 
-                validateSession(jwtUserId, pathUserId, logger)?.let { reason ->
-                    close(reason)
+                val closeReason = withContext(dispatcherProvider.processing) {
+                    validateSession(jwtUserId, pathUserId, logger)
+                }
+
+                closeReason?.let {
+                    close(it)
                     return@webSocket
                 }
 
                 try {
-                    webSocketManager.handleSession(this, jwtUserId!!)
+                    logger.info("[CONN|{}] Opening connection", connectionId)
+                    withContext(dispatcherProvider.websocket) {
+                        webSocketManager.handleSession(this@webSocket, jwtUserId!!, connectionId)
+                    }
+                    logger.info("[CONN|{}] Connection active", connectionId)
+
                 } catch (e: Exception) {
-                    logger.error("WebSocket error: ${e.message}", e)
+                    logger.error("[CONN|{}] Error: {}", connectionId, e.message)
                     close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
+                } finally {
+                    logger.info("[CONN|{}] Closing connection", connectionId)
+                    val userId = webSocketManager.extractUserId(connectionId)
+                    webSocketManager.cleanupConnection(connectionId, userId)
                 }
             }
         }
     }
-
-    webSocketManager.monitorConnections()
+    launch(dispatcherProvider.monitoring) {
+        webSocketManager.monitorConnections()
+    }
 }
 
 private fun validateSession(jwtUserId: String?, pathUserId: String?, logger: Logger): CloseReason? {
-    // Log the exact values for debugging
-    logger.info("Comparing: '$jwtUserId' vs '$pathUserId'")
+    logger.debug("Comparing: '$jwtUserId' vs '$pathUserId'")
 
     return when {
         jwtUserId == null || pathUserId == null -> {
             logger.warn("Null user ID detected: JWT=$jwtUserId, Path=$pathUserId")
             CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid credentials")
         }
+
         jwtUserId.trim() != pathUserId.trim() -> {
             logger.warn("User ID mismatch: JWT=$jwtUserId, Path=$pathUserId")
             CloseReason(CloseReason.Codes.VIOLATED_POLICY, "User ID mismatch")
         }
+
         else -> {
-            logger.info("User ID match confirmed: $jwtUserId")
+            logger.debug("User ID match confirmed: $jwtUserId")
             null
         }
     }

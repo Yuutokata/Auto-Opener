@@ -28,6 +28,11 @@ object Config {
     fun getRedisPort(): Int = configData.redis.port
     fun getMongoDBUri(): String = configData.mongodb.uri
     fun getMongoDBDatabase(): String = configData.mongodb.db
+    fun getMaxMissedPongs(): Int = configData.maxMissedPongs
+    fun getHealthCheckInterval(): Int = configData.healthCheckInterval
+    fun getMaxRetryAttempts(): Int = configData.maxRetryAttempts
+    fun getHeartBeatTimeout(): Int = configData.heartBeatTimeout
+    fun getHeartBeatInterval(): Int = configData.heartBeatInterval
     fun getBotToken(): List<String> = configData.tokens.bot
     fun getIssuer(): String = configData.jwt.issuer
     fun getAudience(): String = configData.jwt.audience
