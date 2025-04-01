@@ -1,0 +1,120 @@
+name: Code Quality & Deploy to Pterodactyl
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  qodana:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      - name: 'Qodana Scan'
+        uses: JetBrains/qodana-action@v2024.3
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
+
+  deploy:
+    needs: qodana
+    runs-on: ubuntu-latest
+    name: Deploy to Pterodactyl
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Prepare deployment files
+        run: |
+          # Create temp_deploy directory and copy files while preserving structure
+          mkdir -p temp_deploy temp_zip
+          rsync -av --exclude='config.json' --exclude='.github' --exclude='.git' ./ temp_deploy/
+          
+          # Add .gitkeep to empty directories to ensure they are uploaded
+          find temp_deploy -type d -empty -exec touch {}/.gitkeep \;
+
+          # Create ZIP from temp_deploy contents (preserves directory structure)
+          cd temp_deploy
+          zip -r ../deploy.zip .
+
+      - name: Upload to Pterodactyl
+        uses: rexlmanu/pterodactyl-upload-action@v2.1
+        with:
+          panel-host: ${{ secrets.PANEL_HOST }}
+          api-key: ${{ secrets.API_KEY }}
+          server-id: ${{ secrets.SERVER_ID }}
+          source: "deploy.zip"
+          target: "./"
+          decompress-target: true
+          restart: true
+
+      - name: Clean orphaned files (preserve directories)
+        env:
+          SERVER_ID: ${{ secrets.SERVER_ID }}
+          API_KEY: ${{ secrets.API_KEY }}
+          PANEL_HOST: ${{ secrets.PANEL_HOST }}
+        run: |
+          # Generate list of deployed files and directories
+          (cd temp_deploy && find . -type f -printf '%P\n') > deployed_files.txt
+          (cd temp_deploy && find . -type d -printf '%P/\n') > deployed_dirs.txt
+
+          # Get server file list (files and directories)
+          SERVER_FILES_JSON=$(curl -s -X GET "$PANEL_HOST/api/client/servers/$SERVER_ID/files/list?directory=/" \
+            -H "Authorization: Bearer $API_KEY")
+          
+          SERVER_FILES=$(echo "$SERVER_FILES_JSON" | jq -r '.data[] | select(.attributes.is_file == true) | .attributes.name')
+          SERVER_DIRS=$(echo "$SERVER_FILES_JSON" | jq -r '.data[] | select(.attributes.is_file == false) | .attributes.name')
+
+          # Delete files not in deployed_files.txt (preserve config.json)
+          DELETION_BATCH=()
+          while IFS= read -r server_file; do
+            if ! grep -qxF "$server_file" deployed_files.txt && [[ "$server_file" != "config.json" ]]; then
+              DELETION_BATCH+=("\"$server_file\"")
+            fi
+
+            if (( ${#DELETION_BATCH[@]} >= 50 )); then
+              echo "Deleting batch of files..."
+              curl -X POST "$PANEL_HOST/api/client/servers/$SERVER_ID/files/delete" \
+                -H "Authorization: Bearer $API_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{\"root\":\"/\",\"files\":[$(IFS=,; echo "${DELETION_BATCH[*]}")]}"
+              DELETION_BATCH=()
+            fi
+          done <<< "$SERVER_FILES"
+
+          if (( ${#DELETION_BATCH[@]} > 0 )); then
+            echo "Deleting final batch of files..."
+            curl -X POST "$PANEL_HOST/api/client/servers/$SERVER_ID/files/delete" \
+              -H "Authorization: Bearer $API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"root\":\"/\",\"files\":[$(IFS=,; echo "${DELETION_BATCH[*]}")]}"
+          fi
+
+          # Prevent deletion of directories listed in deployed_dirs.txt
+          # Delete temp_deploy folder
+          curl -X POST "$PANEL_HOST/api/client/servers/$SERVER_ID/files/delete" \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"root":"/","files":["temp_deploy"]}'
+
+          # Delete temp_zip folder
+          curl -X POST "$PANEL_HOST/api/client/servers/$SERVER_ID/files/delete" \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"root":"/","files":["temp_zip"]}'
