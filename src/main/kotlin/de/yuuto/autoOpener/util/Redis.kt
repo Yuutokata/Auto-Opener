@@ -8,7 +8,6 @@ import org.redisson.codec.JsonJacksonCodec
 import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.pow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -23,10 +22,11 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
             subscriptionConnectionPoolSize = Config.getSubscriptionConnectionPoolSize()
             connectionPoolSize = Config.getConnectionPoolSize()
             connectionMinimumIdleSize = Config.getSubscriptionConnectionMinimumIdleSize()
+            subscriptionsPerConnection = Config.getSubscriptionsPerConnection()
         }
         codec = JsonJacksonCodec()
     }
-    private val client: RedissonClient = Redisson.create(redisConfig)
+    internal val client: RedissonClient = Redisson.create(redisConfig)
     private val sessionMap = client.getMapCache<String, String>("active_sessions")
     private val logger = LoggerFactory.getLogger(RedisManager::class.java)
     private val dlq = client.getTopic("dead_letter_queue")
@@ -44,7 +44,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     init {
         sessionMap.clear()
         CoroutineScope(dispatcherProvider.monitoring).launch {
-            while (true) {
+            while (isActive) {
                 subscriptionStates.forEach { (userId, state) ->
                     val lastCheckAgo = (System.currentTimeMillis() - state.lastSuccessfulCheck) / 1000
                     logger.info(
@@ -58,7 +58,9 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
                 delay(5.minutes)
             }
         }
+        startSessionVerification()
     }
+
 
     suspend fun storeSession(userId: String, connectionId: String) = withContext(dispatcherProvider.network) {
         try {
@@ -179,6 +181,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
         return (2.0.pow(attempt).toLong() * 1000).coerceAtMost(30000).milliseconds
     }
 
+
     private suspend fun recreateSubscription(userId: String, connectionId: String) {
         for (attempt in 1..Config.getMaxRetryAttempts()) {
             try {
@@ -199,6 +202,54 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
             }
         }
         logger.error("[$userId] Max retry attempts reached for subscription recreation")
+    }
+
+    suspend fun getActiveSessionsForUser(userId: String): List<String> = withContext(dispatcherProvider.network) {
+        try {
+            val userSessionsKey = "user_sessions:$userId"
+            return@withContext client.getSet<String>(userSessionsKey).readAll().toList()
+        } catch (e: Exception) {
+            logger.error("Failed to get active sessions for user $userId: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    fun startSessionVerification() {
+        CoroutineScope(dispatcherProvider.monitoring).launch {
+            while (isActive) {
+                try {
+                    logger.debug("Starting periodic session verification")
+
+                    // Get all user session keys
+                    val sessionKeysPattern = "user_sessions:*"
+                    val sessionKeys = client.keys.getKeysByPattern(sessionKeysPattern)
+
+                    var zombieCount = 0
+
+                    sessionKeys.forEach { key ->
+                        val userId = key.substringAfter("user_sessions:")
+                        val sessionIds = client.getSet<String>(key).readAll().toList()
+
+                        sessionIds.forEach { sessionId ->
+                            // Check if connection exists in WebSocketManager
+                            if (!webSocketManager.activeConnections.containsKey(sessionId)) {
+                                // This is a zombie session
+                                zombieCount++
+                                logger.warn("Found zombie session: $sessionId for user $userId")
+                                client.getSet<String>(key).remove(sessionId)
+                            }
+                        }
+                    }
+
+                    logger.info("Session verification complete. Found and cleaned up $zombieCount zombie sessions")
+
+                    delay(5.minutes)
+                } catch (e: Exception) {
+                    logger.error("Error during session verification: ${e.message}", e)
+                    delay(1.minutes)
+                }
+            }
+        }
     }
 
     fun createSubscription(userId: String, messageHandler: (String) -> Unit) {

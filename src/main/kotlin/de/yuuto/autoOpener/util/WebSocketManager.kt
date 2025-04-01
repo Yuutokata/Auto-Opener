@@ -10,7 +10,9 @@ import kotlinx.io.IOException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -27,6 +29,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             while (isActive) {
                 logConnectionStats()
                 delay(60.seconds)
+                logger.info("Current active connections: ${activeConnections.size} | " +
+                        "Connection metrics: ${connectionMetrics.size} | " +
+                        "Connection timestamps: ${connectionTimestamps.size}")
             }
         }
     }
@@ -153,33 +158,96 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
+
     internal suspend fun cleanupConnection(connectionId: String, userId: String) =
         withContext(dispatcherProvider.websocket) {
-            activeConnections.remove(connectionId)
-            connectionTimestamps.remove(connectionId)
-            redis.removeSession(userId, connectionId)
-            connectionMetrics.remove(connectionId)
-            redis.removeSession(userId, connectionId)
-            redis.stopMonitoringSubscription(userId)
-            logger.info("[$connectionId] | $userId Connection cleaned up")
+            try {
+                // First, clean up local resources without locking
+                activeConnections.remove(connectionId)
+                connectionTimestamps.remove(connectionId)
+                connectionMetrics.remove(connectionId)
+
+                // Then handle Redis cleanup with proper lock handling
+                val lockKey = "connection-cleanup:$connectionId"
+                val lock = redis.client.getLock(lockKey)
+
+                try {
+                    // Use a short timeout for lock acquisition
+                    if (lock.tryLock(2, 5, TimeUnit.SECONDS)) {
+                        try {
+                            // Remove from Redis
+                            redis.removeSession(userId, connectionId)
+                            redis.stopMonitoringSubscription(userId)
+                            logger.info("[$connectionId] | $userId Connection cleaned up")
+                        } finally {
+                            // Only unlock if we own the lock
+                            if (lock.isHeldByCurrentThread()) {
+                                lock.unlock()
+                            }
+                        }
+                    } else {
+                        logger.warn("[$connectionId] | $userId Lock acquisition failed for cleanup")
+                    }
+                } catch (e: Exception) {
+                    logger.error("[$connectionId] Error during Redis cleanup: ${e.message}", e)
+                    // Still ensure we release the lock if we hold it
+                    if (lock.isHeldByCurrentThread()) {
+                        try {
+                            lock.unlock()
+                        } catch (e: Exception) {
+                            logger.error("[$connectionId] Error unlocking: ${e.message}", e)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                logger.error("[$connectionId] Error during connection cleanup: ${e.message}", e)
+            }
         }
+
+    private suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession) {
+        try {
+            session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Connection timeout"))
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Error closing connection: ${e.message}")
+        } finally {
+            val userId = extractUserId(connectionId)
+            cleanupConnection(connectionId, userId)
+        }
+    }
 
     fun monitorConnections() {
         CoroutineScope(dispatcherProvider.monitoring).launch {
             while (isActive) {
                 try {
                     val now = System.currentTimeMillis()
-                    connectionTimestamps.forEach { (connectionId, timestamp) ->
-                        if (now - timestamp > connectionTimeout.inWholeMilliseconds) {
+                    activeConnections.forEach { (connectionId, session) ->
+                        // Check last activity timestamp
+                        if (now - connectionTimestamps.getOrDefault(connectionId, 0) > connectionTimeout.inWholeMilliseconds) {
                             logger.warn("[$connectionId] Inactive connection terminated")
-                            activeConnections[connectionId]?.close(
-                                CloseReason(
-                                    CloseReason.Codes.VIOLATED_POLICY, "Connection timeout"
-                                )
-                            )
-                            cleanupConnection(connectionId, extractUserId(connectionId))
+                            closeAndCleanupConnection(connectionId = connectionId, session = session)
+                        } else {
+                            // Send ping to verify connection is still alive
+                            try {
+                                val pingSuccess = CompletableDeferred<Boolean>()
+                                val pingStart = System.currentTimeMillis()
+
+                                session.outgoing.send(Frame.Ping("ping-${UUID.randomUUID()}".toByteArray()))
+
+                                // Wait for pong with timeout
+                                withTimeoutOrNull(Config.getPongTimeout()) {
+                                    // This would be triggered by pong handler
+                                    pingSuccess.await()
+                                } ?: run {
+                                    logger.warn("[$connectionId] Ping timeout - terminating connection")
+                                    closeAndCleanupConnection(connectionId, session)
+                                }
+                            } catch (e: Exception) {
+                                logger.error("[$connectionId] Error during ping: ${e.message}")
+                                closeAndCleanupConnection(connectionId, session)
+                            }
                         }
                     }
+                    logger.info("")
                 } catch (e: Exception) {
                     logger.error("Error in connection monitoring: ${e.message}", e)
                 } finally {

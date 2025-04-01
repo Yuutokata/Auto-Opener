@@ -18,7 +18,9 @@ data class ConfigData(
     val healthCheckInterval: Int,
     val heartBeatTimeout: Int,
     val heartBeatInterval: Int,
-    val maxRetryAttempts: Int
+    val maxRetryAttempts: Int,
+    val pongTimeout: Long,
+    val subscriptionsPerConnection: Int
 )
 
 @Serializable

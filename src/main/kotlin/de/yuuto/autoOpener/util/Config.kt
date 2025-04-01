@@ -31,6 +31,8 @@ object Config {
     fun getMaxMissedPongs(): Int = configData.maxMissedPongs
     fun getHealthCheckInterval(): Int = configData.healthCheckInterval
     fun getMaxRetryAttempts(): Int = configData.maxRetryAttempts
+    fun getPongTimeout(): Long = configData.pongTimeout
+    fun getSubscriptionsPerConnection(): Int = configData.subscriptionsPerConnection
     fun getHeartBeatTimeout(): Int = configData.heartBeatTimeout
     fun getHeartBeatInterval(): Int = configData.heartBeatInterval
     fun getBotToken(): List<String> = configData.tokens.bot

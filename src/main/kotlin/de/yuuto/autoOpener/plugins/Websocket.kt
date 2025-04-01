@@ -1,5 +1,6 @@
 package de.yuuto.autoOpener.plugins
 
+import de.yuuto.autoOpener.dependencyProvider
 import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.RedisManager
 import de.yuuto.autoOpener.util.WebSocketManager
@@ -17,10 +18,11 @@ import java.util.*
 import kotlin.time.Duration.Companion.seconds
 
 
+private val logger = LoggerFactory.getLogger("WebSocketLogger")
+
 fun Application.configureWebsockets(
     dispatcherProvider: DispatcherProvider, redisManager: RedisManager, webSocketManager: WebSocketManager
 ) {
-    val logger = LoggerFactory.getLogger("WebSocketLogger")
     install(WebSockets) {
         pingPeriod = 25.seconds
         timeout = 45.seconds
@@ -38,6 +40,8 @@ fun Application.configureWebsockets(
                 val role = principal?.payload?.getClaim("role")?.asString()
 
                 logger.debug("JWT User ID: $jwtUserId, Path User ID: $pathUserId, Role: $role")
+
+                cleanupExistingConnections(jwtUserId.toString())
 
                 val connectionId = "${jwtUserId}_${UUID.randomUUID()}"
 
@@ -98,5 +102,30 @@ private fun validateSession(jwtUserId: String?, pathUserId: String?, logger: Log
             logger.debug("User ID match confirmed: $jwtUserId")
             null
         }
+    }
+}
+
+private suspend fun cleanupExistingConnections(userId: String) {
+    try {
+        // Get all existing connections for this user
+        val existingConnections = dependencyProvider.redisManager.getActiveSessionsForUser(userId)
+
+        if (existingConnections.isNotEmpty()) {
+            logger.info("Found ${existingConnections.size} existing connections for user $userId. Cleaning up...")
+
+            existingConnections.forEach { connectionId ->
+                val session = dependencyProvider.webSocketManager.activeConnections[connectionId]
+                if (session != null) {
+                    try {
+                        session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "User reconnected"))
+                    } catch (e: Exception) {
+                        logger.warn("Error closing existing connection $connectionId: ${e.message}")
+                    }
+                }
+                dependencyProvider.webSocketManager.cleanupConnection(connectionId, userId)
+            }
+        }
+    } catch (e: Exception) {
+        logger.error("Error cleaning up existing connections for user $userId: ${e.message}")
     }
 }
