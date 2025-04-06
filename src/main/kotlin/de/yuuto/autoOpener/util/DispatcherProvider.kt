@@ -3,6 +3,7 @@ package de.yuuto.autoOpener.util
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -13,6 +14,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class DispatcherProvider {
     private val logger = LoggerFactory.getLogger(DispatcherProvider::class.java)
+    private val supervisorJob = SupervisorJob()
 
     // Network operations: Optimized for Redis pub/sub and WebSocket message delivery
     // Increased parallelism for high-volume message processing
@@ -42,6 +44,8 @@ class DispatcherProvider {
     // Ensures timely ping/pong handling even under high load
     val heartbeat: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(2)
 
+    private val scope = CoroutineScope(monitoring + supervisorJob)
+
     init {
         logger.info(
             """
@@ -56,10 +60,10 @@ class DispatcherProvider {
         """.trimIndent()
         )
 
-        CoroutineScope(monitoring).launch {
+        scope.launch {
             monitorDispatcherUsage()
         }
-        CoroutineScope(redisSubscriptions).launch {
+        scope.launch {
             logger.info("Redis subscriptions dispatcher activated.")
         }
     }
@@ -119,5 +123,3 @@ class DispatcherProvider {
     }
 
 }
-
-

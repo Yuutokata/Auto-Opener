@@ -11,6 +11,8 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.util.logging.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -23,16 +25,23 @@ private val logger = LoggerFactory.getLogger("WebSocketLogger")
 fun Application.configureWebsockets(
     dispatcherProvider: DispatcherProvider, redisManager: RedisManager, webSocketManager: WebSocketManager
 ) {
+    val supervisorJob = SupervisorJob()
+    val scope = CoroutineScope(dispatcherProvider.monitoring + supervisorJob)
+
     install(WebSockets) {
-        pingPeriod = 25.seconds
-        timeout = 45.seconds
+        pingPeriod = null
+        timeout = 50.seconds
         maxFrameSize = 65536
         masking = false
     }
 
     routing {
         authenticate("auth-user") {
-            webSocket("/listen/{userId}") {
+            webSocketRaw("/listen/{userId}") {
+                // Get the protocol from headers but don't try to set it in response
+                val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+                // Protocol handling should be done before this point - log for debugging
+                protocol?.let { logger.debug("Client requested protocol: $it") }
 
                 val principal = call.principal<JWTPrincipal>()
                 val jwtUserId = principal?.payload?.getClaim("token")?.asString()
@@ -49,7 +58,7 @@ fun Application.configureWebsockets(
 
                 if (role != "user") {
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role"))
-                    return@webSocket
+                    return@webSocketRaw
                 }
 
                 val closeReason = withContext(dispatcherProvider.processing) {
@@ -58,13 +67,13 @@ fun Application.configureWebsockets(
 
                 closeReason?.let {
                     close(it)
-                    return@webSocket
+                    return@webSocketRaw
                 }
 
                 try {
                     logger.info("[CONN|{}] Opening connection", connectionId)
                     withContext(dispatcherProvider.websocket) {
-                        webSocketManager.handleSession(this@webSocket, jwtUserId!!, connectionId)
+                        webSocketManager.handleSession(this@webSocketRaw, jwtUserId!!, connectionId)
                     }
                     logger.info("[CONN|{}] Connection active", connectionId)
 
@@ -79,7 +88,7 @@ fun Application.configureWebsockets(
             }
         }
     }
-    launch(dispatcherProvider.monitoring) {
+    scope.launch {
         webSocketManager.monitorConnections()
     }
 }
@@ -106,26 +115,14 @@ private fun validateSession(jwtUserId: String?, pathUserId: String?, logger: Log
 }
 
 private suspend fun cleanupExistingConnections(userId: String) {
-    try {
-        // Get all existing connections for this user
-        val existingConnections = dependencyProvider.redisManager.getActiveSessionsForUser(userId)
-
-        if (existingConnections.isNotEmpty()) {
-            logger.info("Found ${existingConnections.size} existing connections for user $userId. Cleaning up...")
-
-            existingConnections.forEach { connectionId ->
-                val session = dependencyProvider.webSocketManager.activeConnections[connectionId]
-                if (session != null) {
-                    try {
-                        session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "User reconnected"))
-                    } catch (e: Exception) {
-                        logger.warn("Error closing existing connection $connectionId: ${e.message}")
-                    }
-                }
+    val currentConnectionId = "${userId}_${UUID.randomUUID()}" // Get actual new ID
+    dependencyProvider.redisManager.getActiveSessionsForUser(userId)
+        .filter { it != currentConnectionId } // Prevent killing new connection
+        .forEach { connectionId ->
+            if (dependencyProvider.webSocketManager.activeConnections.containsKey(connectionId)) {
+                logger.info("Closing stale connection $connectionId")
                 dependencyProvider.webSocketManager.cleanupConnection(connectionId, userId)
             }
         }
-    } catch (e: Exception) {
-        logger.error("Error cleaning up existing connections for user $userId: ${e.message}")
-    }
 }
+

@@ -1,5 +1,5 @@
 {
-  "host": "localhost",
+  "host": "0.0.0.0",
   "port": 5064,
   "redis": {
     "host": "127.0.0.1",
@@ -28,5 +28,5 @@
   "heartBeatTimeout": 13,
   "heartBeatInterval": 30,
   "maxRetryAttempts": 3,
-  "pongTimeout": 10
+  "pongTimeout": 30
 }

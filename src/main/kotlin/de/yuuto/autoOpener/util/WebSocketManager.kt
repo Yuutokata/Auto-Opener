@@ -1,5 +1,6 @@
 package de.yuuto.autoOpener.util
 
+import com.github.benmanes.caffeine.cache.Caffeine
 import de.yuuto.autoOpener.dataclass.ConnectionMetrics
 import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import io.ktor.websocket.*
@@ -13,19 +14,24 @@ import org.slf4j.LoggerFactory
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
+    private val supervisorJob = SupervisorJob()
+    private val scope = CoroutineScope(dispatcherProvider.monitoring + supervisorJob)
     private val logger = LoggerFactory.getLogger(WebSocketManager::class.java)
     internal val activeConnections = ConcurrentHashMap<String, WebSocketSession>()
     internal val connectionTimestamps = ConcurrentHashMap<String, Long>()
     internal val connectionMetrics = ConcurrentHashMap<String, ConnectionMetrics>()
+    private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val processedMessages = Caffeine.newBuilder()
+        .expireAfterWrite(1, TimeUnit.MINUTES)
+        .build<String, Boolean>()
 
     private lateinit var redis: RedisManager
 
     init {
-        CoroutineScope(dispatcherProvider.monitoring).launch {
+        scope.launch {
             while (isActive) {
                 logConnectionStats()
                 delay(60.seconds)
@@ -40,7 +46,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         this.redis = redisManager
     }
 
-    private val connectionTimeout = 2.minutes
+    internal fun getSessionById(connectionId: String): WebSocketSession? {
+        return activeConnections[connectionId]
+    }
 
     fun shutdown() {
         activeConnections.clear()
@@ -74,37 +82,54 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         logger.info("[$connectionId] | $userId New connection registered")
     }
 
-    private suspend fun processIncomingMessages(
-        connectionId: String, userId: String
-    ) {
-        val topic = redis.getTopic(userId)
-        var listenerId = -1
+    private suspend fun processIncomingMessages(connectionId: String, userId: String) {
+        val session = activeConnections[connectionId] ?: return
 
-        try {
-            listenerId = topic.addListener(String::class.java) { _, message ->
-                CoroutineScope(dispatcherProvider.websocket).launch {
-                    handleIncomingMessage(connectionId, userId, message)
+        for (frame in session.incoming) {
+            logger.debug("[{}] | {} Received frame: {}", connectionId, userId, frame)
+            when (frame) {
+                is Frame.Pong -> {
+                    // Update activity timestamp for any pong frame
+                    updateActivityTimestamp(connectionId)
+
+                    // Handle custom ping tracking
+                    val pingId = String(frame.data)
+                    pendingPings[pingId]?.let { deferred ->
+                        deferred.complete(Unit)
+                        pendingPings.remove(pingId)
+                        logger.info("[$connectionId] | $userId Pong received for $pingId")
+                    } ?: logger.debug("[$connectionId] | $userId System pong received")
+                }
+                is Frame.Ping -> {
+                    // Manually respond to ping frames in raw WebSocket mode
+                    val pingId = String(frame.data)
+                    logger.info("[$connectionId] | $userId Ping received: $pingId")
+                    // Respond with a pong frame containing the same data
+                    session.outgoing.send(Frame.Pong(frame.data))
+                    updateActivityTimestamp(connectionId)
+                }
+                is Frame.Text -> handleClientMessage(connectionId, frame)
+                is Frame.Binary -> {
+                    val message = frame.readBytes().decodeToString()
+                    logger.info("[$connectionId] | $userId Received binary: $message")
+                }
+                is Frame.Close -> {
+                    logger.info("[$connectionId] | $userId Close frame received")
+                    closeAndCleanupConnection(connectionId, session)
                 }
             }
-
-            for (frame in activeConnections[connectionId]?.incoming ?: return) {
-                when (frame) {
-                    is Frame.Pong -> {
-                        updateActivityTimestamp(connectionId)
-                        logger.info("[$connectionId] | $userId Pong received")
-                    }
-                    is Frame.Text -> handleClientMessage(connectionId, frame)
-                    else -> logger.info("[$connectionId] | $userId Unhandled frame type")
-                }
-            }
-        } finally {
-            topic.removeListener(listenerId)
         }
     }
 
     internal suspend fun handleIncomingMessage(
         connectionId: String, userId: String, message: String
     ) {
+        val messageId = "${message.hashCode()}_${System.currentTimeMillis() / 1000}"
+        if (processedMessages.getIfPresent(messageId) == true) {
+            logger.warn("[$connectionId] | $userId Duplicate message detected: ${message.take(50)}")
+            return
+        }
+        logger.debug("[$connectionId] | $userId Received message: ${message.take(50)}")
         if (!validateMessageFormat(message)) {
             logger.error("[$connectionId] | $userId Invalid message format: ${message.take(50)}")
             return
@@ -162,13 +187,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     internal suspend fun cleanupConnection(connectionId: String, userId: String) =
         withContext(dispatcherProvider.websocket) {
             try {
-                // First, clean up local resources without locking
-                activeConnections.remove(connectionId)
-                connectionTimestamps.remove(connectionId)
-                connectionMetrics.remove(connectionId)
-
-                // Then handle Redis cleanup with proper lock handling
-                val lockKey = "connection-cleanup:$connectionId"
+                val lockKey = "connection-cleanup:$userId"
                 val lock = redis.client.getLock(lockKey)
 
                 try {
@@ -176,6 +195,10 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     if (lock.tryLock(2, 5, TimeUnit.SECONDS)) {
                         try {
                             // Remove from Redis
+                            activeConnections.remove(connectionId)
+                            connectionTimestamps.remove(connectionId)
+                            connectionMetrics.remove(connectionId)
+
                             redis.removeSession(userId, connectionId)
                             redis.stopMonitoringSubscription(userId)
                             logger.info("[$connectionId] | $userId Connection cleaned up")
@@ -204,7 +227,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             }
         }
 
-    private suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession) {
+    internal suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession) {
         try {
             session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Connection timeout"))
         } catch (e: Exception) {
@@ -216,42 +239,32 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     }
 
     fun monitorConnections() {
-        CoroutineScope(dispatcherProvider.monitoring).launch {
+        scope.launch {
             while (isActive) {
                 try {
-                    val now = System.currentTimeMillis()
                     activeConnections.forEach { (connectionId, session) ->
-                        // Check last activity timestamp
-                        if (now - connectionTimestamps.getOrDefault(connectionId, 0) > connectionTimeout.inWholeMilliseconds) {
-                            logger.warn("[$connectionId] Inactive connection terminated")
-                            closeAndCleanupConnection(connectionId = connectionId, session = session)
-                        } else {
-                            // Send ping to verify connection is still alive
-                            try {
-                                val pingSuccess = CompletableDeferred<Boolean>()
-                                val pingStart = System.currentTimeMillis()
-
-                                session.outgoing.send(Frame.Ping("ping-${UUID.randomUUID()}".toByteArray()))
-
-                                // Wait for pong with timeout
-                                withTimeoutOrNull(Config.getPongTimeout()) {
-                                    // This would be triggered by pong handler
-                                    pingSuccess.await()
-                                } ?: run {
-                                    logger.warn("[$connectionId] Ping timeout - terminating connection")
-                                    closeAndCleanupConnection(connectionId, session)
-                                }
-                            } catch (e: Exception) {
-                                logger.error("[$connectionId] Error during ping: ${e.message}")
+                        val pingId = "ping-${UUID.randomUUID()}"
+                        val pingDeferred = CompletableDeferred<Unit>().also {
+                            pendingPings[pingId] = it
+                        }
+                        logger.info("[$connectionId] Ping: $pingId")
+                        try {
+                            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
+                            withTimeoutOrNull((Config.getPongTimeout()) * 1000L ) {
+                                pingDeferred.await()
+                            } ?: run {
+                                logger.warn("[$connectionId] Ping timeout - terminating")
                                 closeAndCleanupConnection(connectionId, session)
                             }
+                        } catch (e: Exception) {
+                            logger.error("[$connectionId] Ping error: ${e.message}")
+                            closeAndCleanupConnection(connectionId, session)
+                        } finally {
+                            pendingPings.remove(pingId)
                         }
                     }
-                    logger.info("")
-                } catch (e: Exception) {
-                    logger.error("Error in connection monitoring: ${e.message}", e)
                 } finally {
-                    delay(30.seconds)
+                    delay(60.seconds)
                 }
             }
         }

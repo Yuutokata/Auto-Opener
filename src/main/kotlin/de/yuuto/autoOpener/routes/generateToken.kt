@@ -33,7 +33,7 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
                 return@post
             }
 
-            if (role == "userssss") {
+            if (role == "user") {
                 if (!token.matches(Regex("^\\d{15,20}$"))) {
                     call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid User ID format"))
                     return@post

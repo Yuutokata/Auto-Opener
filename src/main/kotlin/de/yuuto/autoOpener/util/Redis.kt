@@ -16,6 +16,8 @@ import kotlin.time.Duration.Companion.seconds
 import org.redisson.config.Config as RedissonConfig
 
 class RedisManager(private val dispatcherProvider: DispatcherProvider, private val webSocketManager: WebSocketManager) {
+    private val supervisorJob = SupervisorJob()
+    private val scope = CoroutineScope(dispatcherProvider.monitoring + supervisorJob)
     private val redisConfig = RedissonConfig().apply {
         useSingleServer().apply {
             address = "redis://${Config.getRedisHost()}:${Config.getRedisPort()}"
@@ -30,6 +32,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     private val sessionMap = client.getMapCache<String, String>("active_sessions")
     private val logger = LoggerFactory.getLogger(RedisManager::class.java)
     private val dlq = client.getTopic("dead_letter_queue")
+    private val subscribedTopics = ConcurrentHashMap<String, RTopic>()
 
     private val subscriptionStates = ConcurrentHashMap<String, SubscriptionState>()
 
@@ -43,7 +46,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
 
     init {
         sessionMap.clear()
-        CoroutineScope(dispatcherProvider.monitoring).launch {
+        scope.launch {
             while (isActive) {
                 subscriptionStates.forEach { (userId, state) ->
                     val lastCheckAgo = (System.currentTimeMillis() - state.lastSuccessfulCheck) / 1000
@@ -85,26 +88,67 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     }
 
     fun getTopic(userId: String): RTopic {
-        return client.getTopic("user:$userId").apply {
-            addListener(String::class.java) { _, msg ->
-                logger.debug("[REDIS|{}] Received message: {}", userId, msg.take(200))
+        return subscribedTopics.computeIfAbsent("user:$userId") {
+            client.getTopic("user:$userId").apply {
+                addListener(String::class.java) { _, msg ->
+                    logger.debug("[REDIS|{}] Received message: {}", userId, msg.take(200))
 
-                if (!msg.matches(Regex("^https?://.*"))) {
-                    logger.warn("[REDIS|{}] Invalid message format: {}", userId, msg.take(200))
-                    dlq.publish("Invalid URL: $msg")
-                }
-
-                val traceId = UUID.randomUUID().toString()
-                logger.info("[REDIS|{}|{}] Processing started", userId, traceId)
-                try {
-                    CoroutineScope(dispatcherProvider.redisSubscriptions).launch {
-                        // Existing logic
-                        logger.info("[REDIS|{}|{}] Processing completed", userId, traceId)
+                    if (!msg.matches(Regex("^https?://.*"))) {
+                        logger.warn("[REDIS|{}] Invalid message format: {}", userId, msg.take(200))
+                        dlq.publish("Invalid URL: $msg")
                     }
-                } catch (e: Exception) {
-                    logger.error(
-                        "[REDIS|{}|{}] Processing failed: {}", userId, traceId, e.message
-                    )
+
+                    val traceId = UUID.randomUUID().toString()
+                    logger.info("[REDIS|{}|{}] Processing started", userId, traceId)
+                    try {
+                        CoroutineScope(dispatcherProvider.redisSubscriptions).launch {
+                            val activeSessions = getActiveSessionsForUser(userId)
+                            if (activeSessions.isEmpty()) {
+                                logger.warn("[REDIS|{}|{}] No active sessions found", userId, traceId)
+                                return@launch
+                            }
+
+                            // For each active session, send the message via websocket
+                            var deliveredCount = 0
+                            for (connectionId in activeSessions) {
+                                try {
+                                    val session = webSocketManager.getSessionById(connectionId)
+                                    if (session != null) {
+                                        webSocketManager.handleIncomingMessage(connectionId, userId, msg)
+                                        deliveredCount++
+                                    } else {
+                                        logger.warn(
+                                            "[REDIS|{}|{}] Session not found for connection {}",
+                                            userId,
+                                            traceId,
+                                            connectionId
+                                        )
+                                        removeSession(userId, connectionId)
+                                    }
+                                } catch (e: Exception) {
+                                    logger.error(
+                                        "[REDIS|{}|{}] Error delivering to {}: {}",
+                                        userId,
+                                        traceId,
+                                        connectionId,
+                                        e.message
+                                    )
+                                }
+                            }
+
+                            logger.info(
+                                "[REDIS|{}|{}] Processing completed - delivered to {}/{} clients",
+                                userId,
+                                traceId,
+                                deliveredCount,
+                                activeSessions.size
+                            )
+                        }
+                    } catch (e: Exception) {
+                        logger.error(
+                            "[REDIS|{}|{}] Processing failed: {}", userId, traceId, e.message
+                        )
+                    }
                 }
             }
         }
@@ -123,47 +167,49 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
 
     fun monitorSubscription(userId: String, connectionId: String) {
         subscriptionStates[userId] = SubscriptionState().apply {
-            healthCheckJob = CoroutineScope(dispatcherProvider.monitoring).launch {
-                var consecutiveFailures = 0
+            healthCheckJob = scope.launch {
                 while (isActive) {
                     try {
-                        val checkStart = System.currentTimeMillis()
-                        val testChannel = "health_check:$userId"
-                        val testTopic = client.getTopic(testChannel)
-
-                        val responseReceived = CompletableDeferred<Boolean>()
-                        val listenerId = testTopic.addListener(String::class.java) { _, _ ->
-                            responseReceived.complete(true)
+                        // 1. Add null-safe access
+                        val lastActive = webSocketManager.connectionTimestamps[connectionId] ?: run {
+                            logger.warn("[REDIS|HEALTH|$userId] No activity timestamp")
+                            val session = webSocketManager.getSessionById(connectionId)
+                            if (session != null) {
+                                webSocketManager.closeAndCleanupConnection(connectionId, session)
+                            } else {
+                                logger.warn("[REDIS|HEALTH|$userId] Session not found")
+                            }
+                            cancel("Connection terminated")
+                            return@launch
                         }
 
-                        testTopic.publish("PING")
+                        // 2. Add duration conversion safeguard
+                        val inactiveDuration = System.currentTimeMillis() - lastActive
 
-                        // Wait for response with timeout
-                        withTimeoutOrNull(5.seconds) {
-                            responseReceived.await()
-                        }?.let {
-                            val latency = System.currentTimeMillis() - checkStart
-                            logger.debug("[REDIS|HEALTH|{}] Health check passed ({}ms)", userId, latency)
-                            consecutiveFailures = 0
-                            lastSuccessfulCheck = System.currentTimeMillis()
-                        } ?: run {
-                            logger.warn("[REDIS|HEALTH|{}] Health check timeout", userId)
-                            consecutiveFailures++
+                        // 3. Add connection existence check
+                        val session = webSocketManager.activeConnections[connectionId]
+                        if (session == null) {
+                            logger.warn("[REDIS|HEALTH|$userId] Connection not found")
+                            cancel("Connection terminated")
+                            return@launch
                         }
 
-                        testTopic.removeListener(listenerId)
-
-                        if (consecutiveFailures >= 3) {
-                            logger.error("[REDIS|HEALTH|{}] Critical failure - recreating subscription", userId)
-                            recreateSubscription(userId, connectionId)
-                            consecutiveFailures = 0
-                            delay(1.minutes) // Backoff after recreation
+                        if (inactiveDuration > (Config.getPongTimeout() * 2)) {  // Double the timeout
+                            logger.warn("[REDIS|HEALTH|$userId] Inactive connection")
+                            webSocketManager.closeAndCleanupConnection(connectionId, session)
                         } else {
-                            delay(30.seconds)
+                            logger.debug("[REDIS|HEALTH|$userId] Connection active")
                         }
 
+                        delay(25.seconds)
                     } catch (e: Exception) {
-                        logger.error("[REDIS|HEALTH|{}] Check failed: {}", userId, e.message)
+                        // 4. Improved error logging
+                        logger.error(
+                            """
+                        Health check failed: ${e.javaClass.simpleName} - 
+                        ${e.message ?: "No message"}
+                    """.trimIndent(), e
+                        )
                         delay(exponentialBackoff(++errorCount))
                     }
                 }
@@ -215,7 +261,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     }
 
     fun startSessionVerification() {
-        CoroutineScope(dispatcherProvider.monitoring).launch {
+        scope.launch {
             while (isActive) {
                 try {
                     logger.debug("Starting periodic session verification")
@@ -276,5 +322,5 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
             logger.error("Error shutting down Redis: ${e.message}", e)
         }
     }
-
 }
+
