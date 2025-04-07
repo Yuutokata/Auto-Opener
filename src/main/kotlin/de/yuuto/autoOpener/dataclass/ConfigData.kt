@@ -32,8 +32,7 @@ data class RateLimit(
 
 @Serializable
 data class RateLimits(
-    val token: RateLimit,
-    val websocket: RateLimit
+    val token: RateLimit, val websocket: RateLimit
 )
 
 @Serializable

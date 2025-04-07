@@ -4,6 +4,5 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class TokenRequest(
-    val token: String,
-    val role: String? = "user"
+    val token: String, val role: String? = "user"
 )

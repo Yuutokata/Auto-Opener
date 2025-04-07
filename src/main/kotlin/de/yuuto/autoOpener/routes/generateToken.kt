@@ -36,8 +36,7 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
 
                 if (role != "user" && role != "service") {
                     call.respond(
-                        HttpStatusCode.BadRequest,
-                        mapOf("error" to "Invalid role. Must be 'user' or 'service'")
+                        HttpStatusCode.BadRequest, mapOf("error" to "Invalid role. Must be 'user' or 'service'")
                     )
                     return@post
                 }
@@ -74,8 +73,7 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
 
                     if (!validToken) {
                         call.respond(
-                            HttpStatusCode.Unauthorized,
-                            mapOf("error" to "Service token not found in database")
+                            HttpStatusCode.Unauthorized, mapOf("error" to "Service token not found in database")
                         )
                         return@post
                     }

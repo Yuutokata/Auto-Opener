@@ -70,7 +70,8 @@ fun Application.configureSecurity() {
 }
 
 private suspend fun isValidUserToken(token: String): Boolean {
-    val userExists = dependencyProvider.mongoClient.userExistsInCache(token) || dependencyProvider.mongoClient.userExists(token)
+    val userExists =
+        dependencyProvider.mongoClient.userExistsInCache(token) || dependencyProvider.mongoClient.userExists(token)
     val serviceToken = Config.getBotToken().any { it == token }
     return userExists || serviceToken
 }

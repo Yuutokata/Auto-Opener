@@ -206,13 +206,6 @@ class MongoClient(private val dispatcherProvider: DispatcherProvider) {
         return exists
     }
 
-    fun getUserFromCache(userId: String): User? {
-        val user = userCache[userId]
-        logger.debug("Get user $userId from cache: ${user != null}")
-        return user
-    }
-
-    // Helper function to mask sensitive connection details in logs
     private fun maskConnectionString(uri: String): String {
         val regex = "(mongodb://|mongodb\\+srv://)([^:]+):([^@]+)@".toRegex()
         return uri.replace(regex, "$1$2:****@")
