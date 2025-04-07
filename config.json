@@ -19,6 +19,16 @@
     "issuer": "auto-opener",
     "audience": "chrome-extension"
   },
+  "rateLimits": {
+    "token": {
+      "limit": 20,
+      "duration": 60
+    },
+    "websocket": {
+      "limit": 40,
+      "duration": 60
+    }
+  },
   "subscriptionConnectionPoolSize": 75,
   "subscriptionConnectionMinimumIdleSize": 20,
   "connectionPoolSize": 64,
@@ -28,5 +38,6 @@
   "heartBeatTimeout": 13,
   "heartBeatInterval": 30,
   "maxRetryAttempts": 3,
-  "pongTimeout": 30
+  "pongTimeout": 30,
+  "getInactivityThreshold": 60
 }

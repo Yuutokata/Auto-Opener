@@ -1,9 +1,9 @@
 package de.yuuto.autoOpener.dataclass
 
+import kotlinx.serialization.Contextual
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import org.bson.types.ObjectId
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Contextual
 
 @Serializable
 data class User(

@@ -70,6 +70,7 @@ fun main() {
 fun Application.module() {
     configureMonitoring()
     configureSerialization()
+    configureRateLimiter()
     configureSecurity()
     configureWebsockets(
         dependencyProvider.dispatcherProvider, dependencyProvider.redisManager, dependencyProvider.webSocketManager

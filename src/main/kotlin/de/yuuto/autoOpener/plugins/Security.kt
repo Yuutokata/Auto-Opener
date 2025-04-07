@@ -2,6 +2,7 @@ package de.yuuto.autoOpener.plugins
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import de.yuuto.autoOpener.dependencyProvider
 import de.yuuto.autoOpener.util.Config
 import io.ktor.http.auth.*
 import io.ktor.server.application.*
@@ -45,18 +46,42 @@ fun Application.configureSecurity() {
                 if (credential.payload.audience.contains(audience) && credential.payload.getClaim("role")
                         .asString() == "user" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(Regex("^\\d{15,20}$"))
                 ) {
-                    JWTPrincipal(credential.payload)
+                    if (isValidUserToken(tokenClaim)) {
+                        JWTPrincipal(credential.payload)
+                    } else {
+                        false
+                    }
                 } else false
             }
             authHeader { call ->
                 call.request.headers["Sec-WebSocket-Protocol"]?.let { token ->
-                    HttpAuthHeader.Single("Bearer", token)
+                    if (isValidJwtStructure(token)) {
+                        HttpAuthHeader.Single("Bearer", token)
+                    } else {
+                        null
+                    }
                 }
             }
             challenge { _, _ ->
                 call.respond("Authentication failed: Invalid user token")
             }
         }
+    }
+}
+
+private suspend fun isValidUserToken(token: String): Boolean {
+    val userExists =
+        dependencyProvider.mongoClient.userExistsInCache(token) || dependencyProvider.mongoClient.userExists(token)
+    val serviceToken = Config.getBotToken().any { it == token }
+    return userExists || serviceToken
+}
+
+internal fun isValidJwtStructure(token: String): Boolean {
+    return try {
+        JWT.decode(token)
+        true
+    } catch (e: Exception) {
+        false
     }
 }
 

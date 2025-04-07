@@ -2,7 +2,7 @@ package de.yuuto.autoOpener.plugins
 
 import io.ktor.server.application.*
 import io.ktor.server.metrics.micrometer.*
-import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.request.*
 import io.micrometer.prometheus.PrometheusConfig
 import io.micrometer.prometheus.PrometheusMeterRegistry

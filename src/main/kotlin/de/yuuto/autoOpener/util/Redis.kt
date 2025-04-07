@@ -166,52 +166,54 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     }
 
     fun monitorSubscription(userId: String, connectionId: String) {
+        subscriptionStates[userId]?.healthCheckJob?.cancel()
         subscriptionStates[userId] = SubscriptionState().apply {
             healthCheckJob = scope.launch {
-                while (isActive) {
-                    try {
-                        // 1. Add null-safe access
-                        val lastActive = webSocketManager.connectionTimestamps[connectionId] ?: run {
-                            logger.warn("[REDIS|HEALTH|$userId] No activity timestamp")
-                            val session = webSocketManager.getSessionById(connectionId)
-                            if (session != null) {
+                try {
+                    while (isActive) {
+                        try {
+                            val lastActive = webSocketManager.connectionTimestamps[connectionId] ?: run {
+                                logger.warn("[REDIS|HEALTH|$userId] No activity timestamp")
+                                val session = webSocketManager.getSessionById(connectionId)
+                                if (session != null) {
+                                    webSocketManager.closeAndCleanupConnection(connectionId, session)
+                                } else {
+                                    logger.warn("[REDIS|HEALTH|$userId] Session not found")
+                                }
+                                cancel("Connection terminated")
+                                return@launch
+                            }
+
+
+                            val inactiveDuration = System.currentTimeMillis() - lastActive
+
+                            val session = webSocketManager.activeConnections[connectionId]
+                            if (session == null) {
+                                logger.warn("[REDIS|HEALTH|$userId] Connection not found")
+                                cancel("Connection terminated")
+                                return@launch
+                            }
+
+                            if (inactiveDuration > (Config.getPongTimeout() * 2)) {
+                                logger.warn("[REDIS|HEALTH|$userId] Inactive connection")
                                 webSocketManager.closeAndCleanupConnection(connectionId, session)
                             } else {
-                                logger.warn("[REDIS|HEALTH|$userId] Session not found")
+                                logger.debug("[REDIS|HEALTH|$userId] Connection active")
                             }
-                            cancel("Connection terminated")
-                            return@launch
-                        }
 
-                        // 2. Add duration conversion safeguard
-                        val inactiveDuration = System.currentTimeMillis() - lastActive
-
-                        // 3. Add connection existence check
-                        val session = webSocketManager.activeConnections[connectionId]
-                        if (session == null) {
-                            logger.warn("[REDIS|HEALTH|$userId] Connection not found")
-                            cancel("Connection terminated")
-                            return@launch
-                        }
-
-                        if (inactiveDuration > (Config.getPongTimeout() * 2)) {  // Double the timeout
-                            logger.warn("[REDIS|HEALTH|$userId] Inactive connection")
-                            webSocketManager.closeAndCleanupConnection(connectionId, session)
-                        } else {
-                            logger.debug("[REDIS|HEALTH|$userId] Connection active")
-                        }
-
-                        delay(25.seconds)
-                    } catch (e: Exception) {
-                        // 4. Improved error logging
-                        logger.error(
-                            """
+                            delay(25.seconds)
+                        } catch (e: Exception) {
+                            logger.error(
+                                """
                         Health check failed: ${e.javaClass.simpleName} - 
                         ${e.message ?: "No message"}
                     """.trimIndent(), e
-                        )
-                        delay(exponentialBackoff(++errorCount))
+                            )
+                            delay(exponentialBackoff(++errorCount))
+                        }
                     }
+                } catch (e: Exception) {
+                    logger.error("Subscription monitor failed", e)
                 }
             }
         }
@@ -272,7 +274,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
 
                     var zombieCount = 0
 
-                    sessionKeys.forEach { key ->
+                    for (key in sessionKeys) {
                         val userId = key.substringAfter("user_sessions:")
                         val sessionIds = client.getSet<String>(key).readAll().toList()
 

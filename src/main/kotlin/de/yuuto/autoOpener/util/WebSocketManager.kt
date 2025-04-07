@@ -11,7 +11,7 @@ import kotlinx.io.IOException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
@@ -24,9 +24,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     internal val connectionTimestamps = ConcurrentHashMap<String, Long>()
     internal val connectionMetrics = ConcurrentHashMap<String, ConnectionMetrics>()
     private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
-    private val processedMessages = Caffeine.newBuilder()
-        .expireAfterWrite(1, TimeUnit.MINUTES)
-        .build<String, Boolean>()
+    private val processedMessages = Caffeine.newBuilder().expireAfterWrite(1, TimeUnit.MINUTES).build<String, Boolean>()
 
     private lateinit var redis: RedisManager
 
@@ -35,9 +33,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             while (isActive) {
                 logConnectionStats()
                 delay(60.seconds)
-                logger.info("Current active connections: ${activeConnections.size} | " +
-                        "Connection metrics: ${connectionMetrics.size} | " +
-                        "Connection timestamps: ${connectionTimestamps.size}")
+                logger.info(
+                    "Current active connections: ${activeConnections.size} | " + "Connection metrics: ${connectionMetrics.size} | " + "Connection timestamps: ${connectionTimestamps.size}"
+                )
             }
         }
     }
@@ -100,6 +98,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         logger.info("[$connectionId] | $userId Pong received for $pingId")
                     } ?: logger.debug("[$connectionId] | $userId System pong received")
                 }
+
                 is Frame.Ping -> {
                     // Manually respond to ping frames in raw WebSocket mode
                     val pingId = String(frame.data)
@@ -108,11 +107,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     session.outgoing.send(Frame.Pong(frame.data))
                     updateActivityTimestamp(connectionId)
                 }
+
                 is Frame.Text -> handleClientMessage(connectionId, frame)
                 is Frame.Binary -> {
                     val message = frame.readBytes().decodeToString()
                     logger.info("[$connectionId] | $userId Received binary: $message")
                 }
+
                 is Frame.Close -> {
                     logger.info("[$connectionId] | $userId Close frame received")
                     closeAndCleanupConnection(connectionId, session)
@@ -145,6 +146,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         withContext(dispatcherProvider.websocket) {
             val text = frame.readText()
             logger.debug("[$connectionId] Received client message: ${text.take(50)}")
+            updateActivityTimestamp(connectionId) // Update activity timestamp
         }
 
     private suspend fun sendMessageToClient(connectionId: String, message: String, userId: String) =
@@ -156,7 +158,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
             try {
                 session.outgoing.send(Frame.Text(message))
-                updateActivityTimestamp(connectionId)
+                updateActivityTimestamp(connectionId) // Update activity timestamp
                 logger.debug("[{}] | {} Successfully sent message to client", connectionId, userId)
             } catch (e: ClosedSendChannelException) {
                 logger.warn("[$connectionId] | $userId Send failed - channel closed")
@@ -241,32 +243,41 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     fun monitorConnections() {
         scope.launch {
             while (isActive) {
-                try {
-                    activeConnections.forEach { (connectionId, session) ->
+                val currentTime = System.currentTimeMillis()
+                val inactivityThreshold = Config.getInactivityThreshold()
+
+                activeConnections.forEach { (connectionId, session) ->
+                    val lastActivity = connectionTimestamps[connectionId] ?: 0
+                    val inactiveDuration = currentTime - lastActivity
+
+                    if (inactiveDuration > inactivityThreshold) {
                         val pingId = "ping-${UUID.randomUUID()}"
-                        val pingDeferred = CompletableDeferred<Unit>().also {
-                            pendingPings[pingId] = it
-                        }
-                        logger.info("[$connectionId] Ping: $pingId")
-                        try {
-                            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
-                            withTimeoutOrNull((Config.getPongTimeout()) * 1000L ) {
-                                pingDeferred.await()
-                            } ?: run {
-                                logger.warn("[$connectionId] Ping timeout - terminating")
-                                closeAndCleanupConnection(connectionId, session)
-                            }
-                        } catch (e: Exception) {
-                            logger.error("[$connectionId] Ping error: ${e.message}")
-                            closeAndCleanupConnection(connectionId, session)
-                        } finally {
-                            pendingPings.remove(pingId)
-                        }
+                        sendPing(connectionId, session, pingId)
                     }
-                } finally {
-                    delay(60.seconds)
                 }
+                delay(30.seconds)
             }
+        }
+    }
+
+    private suspend fun sendPing(connectionId: String, session: WebSocketSession, pingId: String) {
+        val pingDeferred = CompletableDeferred<Unit>().also {
+            pendingPings[pingId] = it
+        }
+        logger.info("[$connectionId] Ping: $pingId")
+        try {
+            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
+            withTimeoutOrNull((Config.getPongTimeout()) * 1000L) {
+                pingDeferred.await()
+            } ?: run {
+                logger.warn("[$connectionId] Ping timeout - terminating")
+                closeAndCleanupConnection(connectionId, session)
+            }
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Ping error: ${e.message}")
+            closeAndCleanupConnection(connectionId, session)
+        } finally {
+            pendingPings.remove(pingId)
         }
     }
 
@@ -291,3 +302,4 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 }
+

@@ -4,6 +4,5 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class WebSocketMessage(
-    val message: String,
-    val url: String
+    val message: String, val url: String
 )

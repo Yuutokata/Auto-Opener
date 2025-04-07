@@ -1,13 +1,6 @@
 package de.yuuto.autoOpener.util
 
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asExecutor
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ThreadPoolExecutor
 import kotlin.time.Duration.Companion.seconds
@@ -96,13 +89,15 @@ class DispatcherProvider {
     private fun logDispatcherStats(name: String, dispatcher: CoroutineDispatcher) {
         val executor = (dispatcher.asExecutor() as? ThreadPoolExecutor)
         executor?.run {
-            logger.info("""
+            logger.info(
+                """
             [DISPATCHER|{}] Stats:
             Active: {} | Queue: {} | Pool: {} | Completed: {}
-        """.trimIndent(),
-                name, activeCount, queue.size, poolSize, completedTaskCount)
+        """.trimIndent(), name, activeCount, queue.size, poolSize, completedTaskCount
+            )
         }
     }
+
     fun close() {
         logger.info("Shutting down dispatcher provider...")
         try {
