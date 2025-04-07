@@ -168,9 +168,9 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     fun monitorSubscription(userId: String, connectionId: String) {
         subscriptionStates[userId] = SubscriptionState().apply {
             healthCheckJob = scope.launch {
+            try {
                 while (isActive) {
                     try {
-                        // 1. Add null-safe access
                         val lastActive = webSocketManager.connectionTimestamps[connectionId] ?: run {
                             logger.warn("[REDIS|HEALTH|$userId] No activity timestamp")
                             val session = webSocketManager.getSessionById(connectionId)
@@ -183,10 +183,9 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
                             return@launch
                         }
 
-                        // 2. Add duration conversion safeguard
+
                         val inactiveDuration = System.currentTimeMillis() - lastActive
 
-                        // 3. Add connection existence check
                         val session = webSocketManager.activeConnections[connectionId]
                         if (session == null) {
                             logger.warn("[REDIS|HEALTH|$userId] Connection not found")
@@ -194,7 +193,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
                             return@launch
                         }
 
-                        if (inactiveDuration > (Config.getPongTimeout() * 2)) {  // Double the timeout
+                        if (inactiveDuration > (Config.getPongTimeout() * 2)) {
                             logger.warn("[REDIS|HEALTH|$userId] Inactive connection")
                             webSocketManager.closeAndCleanupConnection(connectionId, session)
                         } else {
@@ -203,7 +202,6 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
 
                         delay(25.seconds)
                     } catch (e: Exception) {
-                        // 4. Improved error logging
                         logger.error(
                             """
                         Health check failed: ${e.javaClass.simpleName} - 
@@ -213,7 +211,10 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
                         delay(exponentialBackoff(++errorCount))
                     }
                 }
+            } catch (e: Exception) {
+                logger.error("Subscription monitor failed", e)
             }
+        }
         }
     }
 

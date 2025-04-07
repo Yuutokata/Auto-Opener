@@ -20,19 +20,30 @@ data class ConfigData(
     val heartBeatInterval: Int,
     val maxRetryAttempts: Int,
     val pongTimeout: Long,
-    val subscriptionsPerConnection: Int
+    val subscriptionsPerConnection: Int,
+    val getInactivityThreshold: Int,
+    val rateLimits: RateLimits
+)
+
+@Serializable
+data class RateLimit(
+    val limit: Int, val duration: Long
+)
+
+@Serializable
+data class RateLimits(
+    val token: RateLimit,
+    val websocket: RateLimit
 )
 
 @Serializable
 data class Redis(
-    val host: String,
-    val port: Int
+    val host: String, val port: Int
 )
 
 @Serializable
 data class MongoDB(
-    val uri: String,
-    val db: String
+    val uri: String, val db: String
 )
 
 @Serializable
@@ -42,7 +53,5 @@ data class Tokens(
 
 @Serializable
 data class JWT(
-    val issuer: String,
-    val audience: String,
-    val secret: String
+    val issuer: String, val audience: String, val secret: String
 )

@@ -145,6 +145,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         withContext(dispatcherProvider.websocket) {
             val text = frame.readText()
             logger.debug("[$connectionId] Received client message: ${text.take(50)}")
+            updateActivityTimestamp(connectionId) // Update activity timestamp
         }
 
     private suspend fun sendMessageToClient(connectionId: String, message: String, userId: String) =
@@ -156,7 +157,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
             try {
                 session.outgoing.send(Frame.Text(message))
-                updateActivityTimestamp(connectionId)
+                updateActivityTimestamp(connectionId) // Update activity timestamp
                 logger.debug("[{}] | {} Successfully sent message to client", connectionId, userId)
             } catch (e: ClosedSendChannelException) {
                 logger.warn("[$connectionId] | $userId Send failed - channel closed")
@@ -241,32 +242,41 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     fun monitorConnections() {
         scope.launch {
             while (isActive) {
-                try {
-                    activeConnections.forEach { (connectionId, session) ->
+                val currentTime = System.currentTimeMillis()
+                val inactivityThreshold = Config.getInactivityThreshold()
+                
+                activeConnections.forEach { (connectionId, session) ->
+                    val lastActivity = connectionTimestamps[connectionId] ?: 0
+                    val inactiveDuration = currentTime - lastActivity
+                    
+                    if (inactiveDuration > inactivityThreshold) {
                         val pingId = "ping-${UUID.randomUUID()}"
-                        val pingDeferred = CompletableDeferred<Unit>().also {
-                            pendingPings[pingId] = it
-                        }
-                        logger.info("[$connectionId] Ping: $pingId")
-                        try {
-                            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
-                            withTimeoutOrNull((Config.getPongTimeout()) * 1000L ) {
-                                pingDeferred.await()
-                            } ?: run {
-                                logger.warn("[$connectionId] Ping timeout - terminating")
-                                closeAndCleanupConnection(connectionId, session)
-                            }
-                        } catch (e: Exception) {
-                            logger.error("[$connectionId] Ping error: ${e.message}")
-                            closeAndCleanupConnection(connectionId, session)
-                        } finally {
-                            pendingPings.remove(pingId)
-                        }
+                        sendPing(connectionId, session, pingId)
                     }
-                } finally {
-                    delay(60.seconds)
                 }
+                delay(30.seconds)
             }
+        }
+    }
+
+    private suspend fun sendPing(connectionId: String, session: WebSocketSession, pingId: String) {
+        val pingDeferred = CompletableDeferred<Unit>().also {
+            pendingPings[pingId] = it
+        }
+        logger.info("[$connectionId] Ping: $pingId")
+        try {
+            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
+            withTimeoutOrNull((Config.getPongTimeout()) * 1000L) {
+                pingDeferred.await()
+            } ?: run {
+                logger.warn("[$connectionId] Ping timeout - terminating")
+                closeAndCleanupConnection(connectionId, session)
+            }
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Ping error: ${e.message}")
+            closeAndCleanupConnection(connectionId, session)
+        } finally {
+            pendingPings.remove(pingId)
         }
     }
 
@@ -291,3 +301,4 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 }
+

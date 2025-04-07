@@ -29,7 +29,7 @@ dependencies {
     implementation("io.ktor:ktor-server-call-logging")
     implementation("com.auth0:java-jwt:4.4.0")
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.0")
-
+    implementation("io.ktor:ktor-server-rate-limit")
     implementation("org.litote.kmongo:kmongo:5.2.0")
     implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
 }
