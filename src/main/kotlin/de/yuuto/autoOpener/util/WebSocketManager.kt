@@ -255,7 +255,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         sendPing(connectionId, session, pingId)
                     }
                 }
-                delay(30.seconds)
+                delay(Config.getHealthCheckInterval().seconds)
             }
         }
     }

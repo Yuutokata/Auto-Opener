@@ -1,7 +1,6 @@
 package de.yuuto.autoOpener.util
 
 import de.yuuto.autoOpener.dataclass.ConfigData
-import de.yuuto.autoOpener.dataclass.RateLimit
 import de.yuuto.autoOpener.dataclass.RateLimits
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -30,15 +29,12 @@ object Config {
     fun getRedisPort(): Int = configData.redis.port
     fun getMongoDBUri(): String = configData.mongodb.uri
     fun getMongoDBDatabase(): String = configData.mongodb.db
-    fun getMaxMissedPongs(): Int = configData.maxMissedPongs
     fun getHealthCheckInterval(): Int = configData.healthCheckInterval
     fun getMaxRetryAttempts(): Int = configData.maxRetryAttempts
     fun getPongTimeout(): Long = configData.pongTimeout
     fun getInactivityThreshold(): Int = configData.getInactivityThreshold
     fun getSubscriptionsPerConnection(): Int = configData.subscriptionsPerConnection
     fun getRateLimits(): RateLimits = configData.rateLimits
-    fun getHeartBeatTimeout(): Int = configData.heartBeatTimeout
-    fun getHeartBeatInterval(): Int = configData.heartBeatInterval
     fun getBotToken(): List<String> = configData.tokens.bot
     fun getIssuer(): String = configData.jwt.issuer
     fun getAudience(): String = configData.jwt.audience

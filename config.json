@@ -33,10 +33,7 @@
   "subscriptionConnectionMinimumIdleSize": 20,
   "connectionPoolSize": 64,
   "subscriptionsPerConnection": 5,
-  "maxMissedPongs": 3,
   "healthCheckInterval": 30,
-  "heartBeatTimeout": 13,
-  "heartBeatInterval": 30,
   "maxRetryAttempts": 3,
   "pongTimeout": 30,
   "getInactivityThreshold": 60
