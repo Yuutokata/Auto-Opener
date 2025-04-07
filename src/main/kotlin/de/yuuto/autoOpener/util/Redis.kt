@@ -166,6 +166,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
     }
 
     fun monitorSubscription(userId: String, connectionId: String) {
+        subscriptionStates[userId]?.healthCheckJob?.cancel()
         subscriptionStates[userId] = SubscriptionState().apply {
             healthCheckJob = scope.launch {
                 try {
@@ -273,7 +274,7 @@ class RedisManager(private val dispatcherProvider: DispatcherProvider, private v
 
                     var zombieCount = 0
 
-                    sessionKeys.forEach { key ->
+                    for (key in sessionKeys) {
                         val userId = key.substringAfter("user_sessions:")
                         val sessionIds = client.getSet<String>(key).readAll().toList()
 
