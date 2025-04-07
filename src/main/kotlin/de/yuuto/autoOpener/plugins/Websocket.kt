@@ -4,9 +4,11 @@ import de.yuuto.autoOpener.dependencyProvider
 import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.RedisManager
 import de.yuuto.autoOpener.util.WebSocketManager
+import io.ktor.http.HttpHeaders
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
+import io.ktor.server.request.path
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.util.logging.*
@@ -35,14 +37,21 @@ fun Application.configureWebsockets(
         masking = false
     }
 
+    intercept(ApplicationCallPipeline.Plugins) {
+        if (call.request.path().startsWith("/listen/")) {
+            val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+            if (protocol != null) {
+                call.response.headers.append("Sec-WebSocket-Protocol", protocol)
+            }
+        }
+    }
+
     routing {
         authenticate("auth-user") {
             webSocketRaw("/listen/{userId}") {
                 // Get the protocol from headers but don't try to set it in response
-                val protocol = call.request.headers["Sec-WebSocket-Protocol"]
-                // Protocol handling should be done before this point - log for debugging
-                protocol?.let { logger.debug("Client requested protocol: $it") }
-
+                //val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+                //call.response.headers.append("Sec-WebSocket-Protocol", protocol ?: "default")
                 val principal = call.principal<JWTPrincipal>()
                 val jwtUserId = principal?.payload?.getClaim("token")?.asString()
                 val pathUserId = call.parameters["userId"]
