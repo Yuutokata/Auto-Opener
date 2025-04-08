@@ -13,13 +13,8 @@ import org.slf4j.LoggerFactory
 class DependencyProvider {
     val dispatcherProvider = DispatcherProvider()
     val mongoClient = MongoClient(dispatcherProvider)
-    var redisManager: RedisManager
     var webSocketManager: WebSocketManager = WebSocketManager(dispatcherProvider)
-
-    init {
-        redisManager = RedisManager(dispatcherProvider, webSocketManager)
-        webSocketManager.setRedisManager(redisManager)
-    }
+    val botConnectionManager: BotConnectionManager = BotConnectionManager(dispatcherProvider, webSocketManager)
 }
 
 val dependencyProvider = DependencyProvider()
@@ -33,29 +28,27 @@ fun main() {
 
         try {
             println("Closing WebSocket connections...")
-            dependencyProvider.webSocketManager.activeConnections.forEach { (connectionId, session) ->
-                runBlocking {
+            runBlocking {
+                dependencyProvider.webSocketManager.activeConnections.forEach { (connectionId, session) ->
                     session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Server shutting down"))
-                    val userId = dependencyProvider.webSocketManager.extractUserId(connectionId)
-                    dependencyProvider.webSocketManager.cleanupConnection(connectionId, userId)
+                    dependencyProvider.webSocketManager.cleanupConnection(connectionId)
                 }
+
+
+                dependencyProvider.webSocketManager.shutdown()
+
+                dependencyProvider.botConnectionManager.shutdown()
+
+                // Close MongoDB connections
+                logger.info("Closing MongoDB connections...")
+                dependencyProvider.mongoClient.close()
+
+                // Close dispatcher resources
+                logger.info("Closing dispatcher resources...")
+                dependencyProvider.dispatcherProvider.close()
+
+                logger.info("Shutdown complete")
             }
-
-            dependencyProvider.webSocketManager.shutdown()
-
-            // Close Redis connections
-            logger.info("Closing Redis connections...")
-            dependencyProvider.redisManager.shutdown()
-
-            // Close MongoDB connections
-            logger.info("Closing MongoDB connections...")
-            dependencyProvider.mongoClient.close()
-
-            // Close dispatcher resources
-            logger.info("Closing dispatcher resources...")
-            dependencyProvider.dispatcherProvider.close()
-
-            logger.info("Shutdown complete")
         } catch (e: Exception) {
             System.err.println("Error during shutdown: ${e.message}")
             e.printStackTrace()
@@ -70,13 +63,12 @@ fun main() {
 fun Application.module() {
     configureMonitoring()
     configureSerialization()
-    configureRateLimiter()
     configureSecurity()
     configureWebsockets(
-        dependencyProvider.dispatcherProvider, dependencyProvider.redisManager, dependencyProvider.webSocketManager
+        dependencyProvider.dispatcherProvider, dependencyProvider.webSocketManager
     )
     configureRouting(
-        dependencyProvider.dispatcherProvider, dependencyProvider.mongoClient, dependencyProvider.redisManager
+        dependencyProvider.dispatcherProvider, dependencyProvider.mongoClient, dependencyProvider.webSocketManager
     )
     configureSecurityHeaders()
 }
