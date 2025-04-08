@@ -14,7 +14,6 @@ class DependencyProvider {
     val dispatcherProvider = DispatcherProvider()
     val mongoClient = MongoClient(dispatcherProvider)
     var webSocketManager: WebSocketManager = WebSocketManager(dispatcherProvider)
-    val botConnectionManager: BotConnectionManager = BotConnectionManager(dispatcherProvider, webSocketManager)
 }
 
 val dependencyProvider = DependencyProvider()
@@ -36,8 +35,6 @@ fun main() {
 
 
                 dependencyProvider.webSocketManager.shutdown()
-
-                dependencyProvider.botConnectionManager.shutdown()
 
                 // Close MongoDB connections
                 logger.info("Closing MongoDB connections...")

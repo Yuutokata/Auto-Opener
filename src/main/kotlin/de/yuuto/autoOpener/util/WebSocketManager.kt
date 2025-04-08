@@ -49,36 +49,12 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    internal fun getSessionById(connectionId: String): WebSocketSession? {
-        return activeConnections[connectionId]
-    }
-
     fun shutdown() {
         activeConnections.clear()
         connectionTimestamps.clear()
         connectionMetrics.clear()
 
         logger.info("WebSocketManager resources released")
-    }
-
-    internal fun registerActiveConnection(
-        connectionId: String,
-        session: WebSocketSession,
-        userId: String? = null,
-        botId: String? = null
-    ) {
-        synchronized(activeConnections) {
-            activeConnections[connectionId] = session
-            connectionTimestamps[connectionId] = System.currentTimeMillis()
-
-            when {
-                userId != null -> storeUserSession(userId, connectionId)
-                botId != null -> storeBotSession(botId, connectionId)
-                else -> logger.error("Invalid registration: $connectionId")
-            }
-
-            logger.debug("[BOT:$connectionId] Registered in active connections")
-        }
     }
 
     private fun storeUserSession(userId: String, connectionId: String) {
@@ -147,23 +123,6 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
         storeSession(userId, connectionId) // Store session in memory
         logger.info("[$connectionId] | $userId New connection registered")
-    }
-
-    fun cleanupBotSession(botId: String, connectionId: String) {
-        botSessions[botId]?.remove(connectionId)
-        if (botSessions[botId]?.isEmpty() == true) {
-            botSessions.remove(botId)
-        }
-        logger.debug("Removed bot session $connectionId")
-    }
-
-    fun getActiveUserSessions(): Map<String, Set<String>> {
-        return userSessions.toMap()
-    }
-
-    suspend fun sendToSession(connectionId: String, message: String) {
-        val userId = extractUserId(connectionId)
-        sendMessageToClient(connectionId, message, userId)
     }
 
     private fun verifySessionIntegrity() {
@@ -325,10 +284,6 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    fun handlePong(pingId: String, connectionId: String) {
-        pendingPings[pingId]?.complete(Unit)
-        updateActivityTimestamp(connectionId)
-    }
     private suspend fun sendHealthPing(connectionId: String, session: WebSocketSession) {
         val pingId = "ping-${UUID.randomUUID()}"
         val pingDeferred = CompletableDeferred<Unit>().also {
@@ -358,27 +313,6 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             logger.error("[$connectionId] Close error: ${e.message}")
         } finally {
             cleanupConnection(connectionId)
-        }
-    }
-
-    private suspend fun sendPing(connectionId: String, session: WebSocketSession, pingId: String) {
-        val pingDeferred = CompletableDeferred<Unit>().also {
-            pendingPings[pingId] = it
-        }
-        logger.info("[$connectionId] Ping: $pingId")
-        try {
-            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
-            withTimeoutOrNull((Config.getPongTimeout()) * 1000L) {
-                pingDeferred.await()
-            } ?: run {
-                logger.warn("[$connectionId] Ping timeout - terminating")
-                closeAndCleanupConnection(connectionId, session)
-            }
-        } catch (e: Exception) {
-            logger.error("[$connectionId] Ping error: ${e.message}")
-            closeAndCleanupConnection(connectionId, session)
-        } finally {
-            pendingPings.remove(pingId)
         }
     }
 

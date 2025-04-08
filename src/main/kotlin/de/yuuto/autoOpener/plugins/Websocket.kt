@@ -98,45 +98,6 @@ fun Application.configureWebsockets(
             }
 
         }
-        authenticate("auth-service") {
-            webSocketRaw("/bot") {
-                val principal = call.principal<JWTPrincipal>()
-                val botId = principal?.payload?.getClaim("token")?.asString() ?: run {
-                    logger.warn("Invalid bot Token: {}", principal?.payload)
-                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid credentials"))
-                    return@webSocketRaw
-                }
-
-                val connectionManager = dependencyProvider.botConnectionManager
-                val connectionId = "bot_${UUID.randomUUID()}"
-
-                try {
-                    connectionManager.registerBotConnection(botId, this, connectionId)
-                    logger.info("[BOT:$connectionId] Connection established")
-
-                    for (frame in incoming) {
-                        when (frame) {
-                            is Frame.Text -> connectionManager.handleBotMessage(frame, botId, connectionId)
-                            is Frame.Pong -> {
-                                val pingId = String(frame.data)
-                                webSocketManager.handlePong(pingId, connectionId)
-                                logger.debug("[BOT:$connectionId] Received Pong: $pingId")
-                            }
-                            is Frame.Ping -> send(Frame.Pong(frame.buffer))
-                            is Frame.Close -> break
-                            else -> logger.warn("[BOT:$connectionId] Unsupported frame type: ${frame.frameType}")
-                        }
-                    }
-                } catch (e: ClosedReceiveChannelException) {
-                    logger.info("[BOT:$botId] Connection closed by client")
-                } catch (e: Exception) {
-                    logger.error("[BOT:$botId] Connection error: ${e.message}")
-                } finally {
-                    connectionManager.cleanupBotConnection(botId, connectionId)
-                    logger.info("[BOT:$botId] Connection cleaned up")
-                }
-            }
-        }
     }
 
     scope.launch {
