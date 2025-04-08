@@ -37,7 +37,12 @@ fun Route.messageRoutes(dispatcherProvider: DispatcherProvider, webSocketManager
                     }
 
                     activeSessions.forEach { connectionId ->
-                        webSocketManager.handleIncomingMessage(connectionId, receiverID, messageData.url)
+                        try {
+                            webSocketManager.handleIncomingMessage(connectionId, receiverID, messageData.url)
+                        } catch (e: IllegalStateException) {
+                            logger.warn("Skipping closed connection: $connectionId")
+                            webSocketManager.cleanupConnection(connectionId)
+                        }
                     }
                 }
 
