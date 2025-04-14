@@ -21,7 +21,7 @@ dependencies {
     implementation("io.ktor:ktor-serialization-jackson-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
     implementation("io.ktor:ktor-server-default-headers")
-    implementation("ch.qos.logback:logback-classic:1.5.16")
+    implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     implementation("io.micrometer:micrometer-registry-prometheus:1.11.3")
     implementation("io.ktor:ktor-server-metrics-micrometer")

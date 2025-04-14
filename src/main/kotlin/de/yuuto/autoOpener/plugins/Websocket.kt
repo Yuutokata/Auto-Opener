@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.util.*
+import kotlin.text.get
 import kotlin.time.Duration.Companion.seconds
 
 
@@ -96,8 +97,45 @@ fun Application.configureWebsockets(
                     webSocketManager.cleanupConnection(connectionId)
                 }
             }
+        }
+        authenticate("auth-service") {
+            webSocketRaw("/bot") {
+                val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+                if (protocol != null && !isValidJwtStructure(protocol)) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token structure"))
+                    return@webSocketRaw
+                }
+
+                val principal = call.principal<JWTPrincipal>()
+                val jwtToken = principal?.payload?.getClaim("token")?.asString()
+                val pathBotId = call.parameters["botId"]
+                val role = principal?.payload?.getClaim("role")?.asString()
+                logger.debug("JWT Bot Token: $jwtToken, Path Bot ID: $pathBotId, Role: $role")
+
+                if (role != "service") {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role for bot"))
+                    return@webSocketRaw
+                }
+
+                val connectionId = "bot_${jwtToken}_${UUID.randomUUID()}"
+
+                try {
+                    logger.info("[CONN|{}] Opening bot connection", connectionId)
+                    withContext(dispatcherProvider.websocket) {
+                        webSocketManager.handleBotSession(this@webSocketRaw, jwtToken.toString(), connectionId)
+                    }
+                    logger.info("[CONN|{}] Bot connection active", connectionId)
+                } catch (e: Exception) {
+                    logger.error("[CONN|{}] Error: {}", connectionId, e.message)
+                    close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
+                } finally {
+                    logger.info("[CONN|{}] Closing bot connection", connectionId)
+                    webSocketManager.cleanupConnection(connectionId)
+                }
+            }
 
         }
+
     }
 
     scope.launch {

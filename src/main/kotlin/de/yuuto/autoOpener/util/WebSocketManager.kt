@@ -67,6 +67,48 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         logger.debug("Stored bot session $connectionId")
     }
 
+    suspend fun handleBotSession(session: WebSocketSession, botId: String, connectionId: String) {
+        try {
+            logger.debug("[CONN|{}] Processing bot session start", connectionId)
+            session.send(Frame.Text(Json.encodeToString(mapOf("status" to "connected"))))
+
+            registerBotConnection(connectionId, session, botId)
+            delay(100)
+            processIncomingMessages(connectionId, botId) // Reuse the message processing logic
+        } catch (e: ClosedReceiveChannelException) {
+            logger.info("[$connectionId] Bot graceful disconnect")
+        } catch (e: IOException) {
+            logger.error("[$connectionId] | $botId Bot IO error: ${e.message}", e)
+        } catch (e: Exception) {
+            logger.error("[$connectionId] | $botId Bot unexpected error: ${e.message}", e)
+        } finally {
+            cleanupConnection(connectionId)
+        }
+    }
+
+    private fun registerBotConnection(
+        connectionId: String, session: WebSocketSession, botId: String
+    ) {
+        synchronized(activeConnections) {
+            activeConnections[connectionId] = session
+            connectionTimestamps[connectionId] = System.currentTimeMillis()
+        }
+        storeBotSession(botId, connectionId)
+        logger.info("[$connectionId] | $botId New bot connection registered")
+    }
+
+    fun getActiveSessionsForBot(botId: String): List<String> {
+        return botSessions[botId]?.toList() ?: emptyList()
+    }
+
+    private fun removeBotSession(botId: String, connectionId: String) {
+        botSessions[botId]?.remove(connectionId)
+        if (botSessions[botId]?.isEmpty() == true) {
+            botSessions.remove(botId)
+        }
+        logger.debug("Removed session $connectionId for bot $botId")
+    }
+
     suspend fun handleSession(session: WebSocketSession, userId: String, connectionId: String) {
         try {
             registerConnection(connectionId, session, userId)
@@ -248,11 +290,15 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 connectionTimestamps.remove(connectionId)
                 connectionMetrics.remove(connectionId)
 
-                when {
-                    connectionId.startsWith("user_") ->
-                        userSessions.values.forEach { it.remove(connectionId) }
-                    connectionId.startsWith("bot_") ->
-                        botSessions.values.forEach { it.remove(connectionId) }
+                // Check if this is a user connection
+                val userId = extractUserId(connectionId)
+                if (connectionId.contains("_")) {
+                    if (connectionId.startsWith("bot_")) {
+                        val botId = connectionId.split("_")[1]
+                        removeBotSession(botId, connectionId)
+                    } else {
+                        removeSession(userId, connectionId)
+                    }
                 }
 
                 logger.info("[$connectionId] Connection fully cleaned up")
