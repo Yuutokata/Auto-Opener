@@ -3,6 +3,7 @@ package de.yuuto.autoOpener.util
 import com.github.benmanes.caffeine.cache.Caffeine
 import de.yuuto.autoOpener.dataclass.ConnectionMetrics
 import de.yuuto.autoOpener.dataclass.WebSocketMessage
+import de.yuuto.autoOpener.dataclass.WebsocketReceive
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -86,6 +87,8 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
+
+
     private fun registerBotConnection(
         connectionId: String, session: WebSocketSession, botId: String
     ) {
@@ -123,6 +126,40 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             cleanupConnection(connectionId)
         }
     }
+
+    private suspend fun handleBotMessage(connectionId: String, frame: Frame.Text, botId: String) = withContext(dispatcherProvider.websocket) {
+        val text = frame.readText()
+        logger.debug("[$connectionId] | $botId Received bot message: ${text.take(50)}")
+        try {
+            val websocketReceive = Json.decodeFromString<WebsocketReceive>(text)
+
+            if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
+                logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+                return@withContext
+            }
+            if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
+                logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+                return@withContext
+            }
+            val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
+            if (activeSessions.isEmpty()) {
+                logger.warn("[$connectionId] | $botId No active sessions found for user ${websocketReceive.userId}")
+                return@withContext
+            }
+            activeSessions.forEach { userConnectionId ->
+                try {
+                    sendMessageToClient(userConnectionId, Json.encodeToString(websocketReceive.message), websocketReceive.userId)
+                    logger.info("[$connectionId] | $botId Message forwarded to user ${websocketReceive.userId}")
+                } catch (e: Exception) {
+                    logger.error("[$connectionId] | $botId Failed to send message to ${websocketReceive.userId}: ${e.message}")
+                }
+                updateActivityTimestamp(connectionId)
+            }
+        } catch (e: Exception) {
+            logger.error("[$connectionId] | $botId Error processing bot message: ${e.message}", e)
+        }
+    }
+
 
     private fun storeSession(userId: String, connectionId: String) {
         userSessions.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(connectionId)
@@ -206,7 +243,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     updateActivityTimestamp(connectionId)
                 }
 
-                is Frame.Text -> handleClientMessage(connectionId, frame)
+                is Frame.Text -> {
+                    if (connectionId.startsWith("bot_")) {
+                        handleBotMessage(connectionId, frame, userId)
+                    } else {
+                        handleClientMessage(connectionId, frame)
+                    }
+                }
                 is Frame.Binary -> {
                     val message = frame.readBytes().decodeToString()
                     logger.info("[$connectionId] | $userId Received binary: $message")
