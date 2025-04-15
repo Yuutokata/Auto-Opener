@@ -1,6 +1,5 @@
 package de.yuuto.autoOpener.plugins
 
-import de.yuuto.autoOpener.dependencyProvider
 import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.server.application.*
@@ -13,13 +12,10 @@ import io.ktor.util.logging.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.util.*
-import kotlin.text.get
 import kotlin.time.Duration.Companion.seconds
 
 
@@ -117,12 +113,14 @@ fun Application.configureWebsockets(
                     return@webSocketRaw
                 }
 
-                val connectionId = "bot_${jwtToken}_${UUID.randomUUID()}"
+                val botId = UUID.randomUUID()
+
+                val connectionId = "bot_${botId}"
 
                 try {
                     logger.info("[CONN|{}] Opening bot connection", connectionId)
                     withContext(dispatcherProvider.websocket) {
-                        webSocketManager.handleBotSession(this@webSocketRaw, jwtToken.toString(), connectionId)
+                        webSocketManager.handleBotSession(this@webSocketRaw, botId.toString(), connectionId)
                     }
                     logger.info("[CONN|{}] Bot connection active", connectionId)
                 } catch (e: Exception) {

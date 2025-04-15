@@ -77,8 +77,7 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
             }
 
             val jwtToken = withContext(dispatcherProvider.processing) {
-                JWT.create().withAudience(audience).withIssuer(issuer).withClaim("token", token)
-                    .withClaim("role", role)
+                JWT.create().withAudience(audience).withIssuer(issuer).withClaim("token", token).withClaim("role", role)
                     .withExpiresAt(Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3)))
                     .sign(Algorithm.HMAC256(secret))
             }

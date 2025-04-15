@@ -1,7 +1,10 @@
 package de.yuuto.autoOpener
 
 import de.yuuto.autoOpener.plugins.*
-import de.yuuto.autoOpener.util.*
+import de.yuuto.autoOpener.util.Config
+import de.yuuto.autoOpener.util.DispatcherProvider
+import de.yuuto.autoOpener.util.MongoClient
+import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*

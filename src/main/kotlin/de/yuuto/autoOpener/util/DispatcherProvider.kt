@@ -29,10 +29,6 @@ class DispatcherProvider {
     // Balanced between IO parallelism and WebSocket protocol requirements
     val websocket: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(6)
 
-    // Dedicated dispatcher for Redis subscriptions
-    // Isolated to prevent pub/sub backpressure from affecting other operations
-    val redisSubscriptions: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(8)
-
     // Heartbeat dispatcher with strict QoS guarantees
     // Ensures timely ping/pong handling even under high load
     val heartbeat: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(2)
@@ -48,7 +44,6 @@ class DispatcherProvider {
             Processing (CPU): ${getParallelism(processing)} threads
             Monitoring: ${getParallelism(monitoring)} threads
             WebSocket: ${getParallelism(websocket)} threads
-            Redis Subscriptions: ${getParallelism(redisSubscriptions)} threads
             Heartbeat: ${getParallelism(heartbeat)} threads
         """.trimIndent()
         )
@@ -80,7 +75,6 @@ class DispatcherProvider {
             while (isActive) {
                 logDispatcherStats("Network", network)
                 logDispatcherStats("WebSocket", websocket)
-                logDispatcherStats("RedisSub", redisSubscriptions)
                 delay(120.seconds)
             }
         }
@@ -108,7 +102,6 @@ class DispatcherProvider {
             logDispatcherStats("Database", database)
             logDispatcherStats("Processing", processing)
             logDispatcherStats("Monitoring", monitoring)
-            logDispatcherStats("RedisSub", redisSubscriptions)
             logDispatcherStats("Heartbeat", heartbeat)
 
             logger.info("Dispatcher provider resources released")

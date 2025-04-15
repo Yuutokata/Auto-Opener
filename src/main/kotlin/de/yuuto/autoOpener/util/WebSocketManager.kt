@@ -41,9 +41,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 delay(60.seconds)
                 synchronized(activeConnections) { // Log after ensuring updates are complete
                     logger.info(
-                        "Current active connections: ${activeConnections.size} | " +
-                        "Connection metrics: ${connectionMetrics.size} | " +
-                        "Connection timestamps: ${connectionTimestamps.size}"
+                        "Current active connections: ${activeConnections.size} | " + "Connection metrics: ${connectionMetrics.size} | " + "Connection timestamps: ${connectionTimestamps.size}"
                     )
                 }
             }
@@ -79,14 +77,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         } catch (e: ClosedReceiveChannelException) {
             logger.info("[$connectionId] Bot graceful disconnect")
         } catch (e: IOException) {
-            logger.error("[$connectionId] | $botId Bot IO error: ${e.message}", e)
+            logger.error("[$connectionId] | Bot IO error: ${e.message}", e)
         } catch (e: Exception) {
-            logger.error("[$connectionId] | $botId Bot unexpected error: ${e.message}", e)
+            logger.error("[$connectionId] | Bot unexpected error: ${e.message}", e)
         } finally {
             cleanupConnection(connectionId)
         }
     }
-
 
 
     private fun registerBotConnection(
@@ -97,7 +94,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             connectionTimestamps[connectionId] = System.currentTimeMillis()
         }
         storeBotSession(botId, connectionId)
-        logger.info("[$connectionId] | $botId New bot connection registered")
+        logger.info("[$connectionId] | New bot connection registered")
     }
 
     fun getActiveSessionsForBot(botId: String): List<String> {
@@ -127,39 +124,42 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    private suspend fun handleBotMessage(connectionId: String, frame: Frame.Text, botId: String) = withContext(dispatcherProvider.websocket) {
-        val text = frame.readText()
-        logger.debug("[$connectionId] | $botId Received bot message: ${text.take(50)}")
-        try {
-            val websocketReceive = Json.decodeFromString<WebsocketReceive>(text)
+    private suspend fun handleBotMessage(connectionId: String, frame: Frame.Text, botId: String) =
+        withContext(dispatcherProvider.websocket) {
+            val text = frame.readText()
+            logger.debug("[$connectionId] | $botId Received bot message: ${text.take(50)}")
+            try {
+                val websocketReceive = Json.decodeFromString<WebsocketReceive>(text)
 
-            if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
-                logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
-                return@withContext
-            }
-            if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
-                logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
-
-                return@withContext
-            }
-            val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
-            if (activeSessions.isEmpty()) {
-                logger.warn("[$connectionId] | $botId No active sessions found for user ${websocketReceive.userId}")
-                return@withContext
-            }
-            activeSessions.forEach { userConnectionId ->
-                try {
-                    sendMessageToClient(userConnectionId, Json.encodeToString(websocketReceive.message), websocketReceive.userId)
-                    logger.info("[$connectionId] | $botId Message forwarded to user ${websocketReceive.userId}")
-                } catch (e: Exception) {
-                    logger.error("[$connectionId] | $botId Failed to send message to ${websocketReceive.userId}: ${e.message}")
+                if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
+                    logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+                    return@withContext
                 }
-                updateActivityTimestamp(connectionId)
+                if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
+                    logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+
+                    return@withContext
+                }
+                val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
+                if (activeSessions.isEmpty()) {
+                    logger.warn("[$connectionId] | $botId No active sessions found for user ${websocketReceive.userId}")
+                    return@withContext
+                }
+                activeSessions.forEach { userConnectionId ->
+                    try {
+                        sendMessageToClient(
+                            userConnectionId, Json.encodeToString(websocketReceive.message), websocketReceive.userId
+                        )
+                        logger.info("[$connectionId] | $botId Message forwarded to user ${websocketReceive.userId}")
+                    } catch (e: Exception) {
+                        logger.error("[$connectionId] | $botId Failed to send message to ${websocketReceive.userId}: ${e.message}")
+                    }
+                    updateActivityTimestamp(connectionId)
+                }
+            } catch (e: Exception) {
+                logger.error("[$connectionId] | $botId Error processing bot message: ${e.message}", e)
             }
-        } catch (e: Exception) {
-            logger.error("[$connectionId] | $botId Error processing bot message: ${e.message}", e)
         }
-    }
 
 
     private fun storeSession(userId: String, connectionId: String) {
@@ -207,9 +207,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
     private fun verifySessionIntegrity() {
         activeConnections.keys.forEach { connectionId ->
-            if (!userSessions.values.any { it.contains(connectionId) } &&
-                !botSessions.values.any { it.contains(connectionId) }
-            ) {
+            if (!userSessions.values.any { it.contains(connectionId) } && !botSessions.values.any {
+                    it.contains(
+                        connectionId
+                    )
+                }) {
                 logger.error("[$connectionId] Orphaned connection detected")
                 scope.launch { cleanupConnection(connectionId) }
             }
@@ -251,6 +253,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         handleClientMessage(connectionId, frame)
                     }
                 }
+
                 is Frame.Binary -> {
                     val message = frame.readBytes().decodeToString()
                     logger.info("[$connectionId] | $userId Received binary: $message")
@@ -327,27 +330,26 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    internal suspend fun cleanupConnection(connectionId: String) =
-        withContext(dispatcherProvider.websocket) {
-            synchronized(activeConnections) {
-                activeConnections.remove(connectionId)
-                connectionTimestamps.remove(connectionId)
-                connectionMetrics.remove(connectionId)
+    internal suspend fun cleanupConnection(connectionId: String) = withContext(dispatcherProvider.websocket) {
+        synchronized(activeConnections) {
+            activeConnections.remove(connectionId)
+            connectionTimestamps.remove(connectionId)
+            connectionMetrics.remove(connectionId)
 
-                // Check if this is a user connection
-                val userId = extractUserId(connectionId)
-                if (connectionId.contains("_")) {
-                    if (connectionId.startsWith("bot_")) {
-                        val botId = connectionId.split("_")[1]
-                        removeBotSession(botId, connectionId)
-                    } else {
-                        removeSession(userId, connectionId)
-                    }
+            // Check if this is a user connection
+            val userId = extractUserId(connectionId)
+            if (connectionId.contains("_")) {
+                if (connectionId.startsWith("bot_")) {
+                    val botId = connectionId.split("_")[1]
+                    removeBotSession(botId, connectionId)
+                } else {
+                    removeSession(userId, connectionId)
                 }
-
-                logger.info("[$connectionId] Connection fully cleaned up")
             }
+
+            logger.info("[$connectionId] Connection fully cleaned up")
         }
+    }
 
     internal suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession) {
         try {

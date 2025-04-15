@@ -16,17 +16,17 @@ fun Route.messageRoutes(dispatcherProvider: DispatcherProvider, webSocketManager
     authenticate("auth-service") {
         post("/send_message") {
             val receiverID = call.queryParameters["user_id"]
-            
+
             if (receiverID.isNullOrBlank() || !receiverID.matches(Regex("^\\d{15,20}$"))) {
                 call.response.status(HttpStatusCode.BadRequest)
                 call.respondText("Invalid user ID.")
                 logger.warn("Invalid user ID: $receiverID")
                 return@post
             }
-            
+
             try {
                 val messageData = call.receive<WebSocketMessage>()
-                
+
                 withContext(dispatcherProvider.network) {
                     val activeSessions = webSocketManager.getActiveSessionsForUser(receiverID)
                     if (activeSessions.isEmpty()) {
