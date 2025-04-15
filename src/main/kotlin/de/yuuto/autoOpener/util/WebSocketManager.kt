@@ -139,6 +139,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             }
             if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
                 logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+
                 return@withContext
             }
             val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
