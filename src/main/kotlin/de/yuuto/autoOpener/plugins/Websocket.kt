@@ -1,13 +1,11 @@
 package de.yuuto.autoOpener.plugins
 
-import de.yuuto.autoOpener.dependencyProvider
 import de.yuuto.autoOpener.util.DispatcherProvider
-import de.yuuto.autoOpener.util.RedisManager
 import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.server.application.*
+import io.ktor.server.application.call
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
-import io.ktor.server.plugins.ratelimit.*
 import io.ktor.server.request.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -24,84 +22,124 @@ import kotlin.time.Duration.Companion.seconds
 
 private val logger = LoggerFactory.getLogger("WebSocketLogger")
 
+
+
 fun Application.configureWebsockets(
-    dispatcherProvider: DispatcherProvider, redisManager: RedisManager, webSocketManager: WebSocketManager
+    dispatcherProvider: DispatcherProvider, webSocketManager: WebSocketManager
 ) {
     val supervisorJob = SupervisorJob()
     val scope = CoroutineScope(dispatcherProvider.monitoring + supervisorJob)
 
     install(WebSockets) {
         pingPeriod = null
-        timeout = 50.seconds
+        timeout = 90.seconds
         maxFrameSize = 65536
         masking = false
     }
 
     intercept(ApplicationCallPipeline.Plugins) {
-        if (call.request.path().startsWith("/listen/")) {
-            val protocol = call.request.headers["Sec-WebSocket-Protocol"]
-            if (protocol != null) {
-                call.response.headers.append("Sec-WebSocket-Protocol", protocol)
-            }
+        when {
+            call.request.path().startsWith("/listen/") -> handleProtocolHeader(call)
+            call.request.path() == "/bot" -> handleProtocolHeader(call)
         }
     }
 
     routing {
-        rateLimit(RateLimitName("websocket")) {
-            authenticate("auth-user") {
-                webSocketRaw("/listen/{userId}") {
-                    val protocol = call.request.headers["Sec-WebSocket-Protocol"]
-                    if (protocol != null && !isValidJwtStructure(protocol)) {
-                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token structure"))
-                        return@webSocketRaw
+        authenticate("auth-user") {
+            webSocketRaw("/listen/{userId}") {
+                val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+                if (protocol != null && !isValidJwtStructure(protocol)) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token structure"))
+                    return@webSocketRaw
+                }
+
+                val principal = call.principal<JWTPrincipal>()
+                val jwtUserId = principal?.payload?.getClaim("token")?.asString()
+                val pathUserId = call.parameters["userId"]
+                val role = principal?.payload?.getClaim("role")?.asString()
+
+                logger.debug("JWT User ID: $jwtUserId, Path User ID: $pathUserId, Role: $role")
+
+                cleanupExistingConnections(jwtUserId.toString(), webSocketManager)
+
+                val connectionId = "${jwtUserId}_${UUID.randomUUID()}"
+
+                if (role != "user") {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role"))
+                    return@webSocketRaw
+                }
+
+                val closeReason = withContext(dispatcherProvider.processing) {
+                    validateSession(jwtUserId, pathUserId, logger)
+                }
+
+                closeReason?.let {
+                    close(it)
+                    return@webSocketRaw
+                }
+
+                try {
+                    logger.info("[CONN|{}] Opening connection", connectionId)
+                    withContext(dispatcherProvider.websocket) {
+                        webSocketManager.handleSession(this@webSocketRaw, jwtUserId!!, connectionId)
                     }
+                    logger.info("[CONN|{}] Connection active", connectionId)
 
-                    val principal = call.principal<JWTPrincipal>()
-                    val jwtUserId = principal?.payload?.getClaim("token")?.asString()
-                    val pathUserId = call.parameters["userId"]
-                    val role = principal?.payload?.getClaim("role")?.asString()
-
-                    logger.debug("JWT User ID: $jwtUserId, Path User ID: $pathUserId, Role: $role")
-
-                    cleanupExistingConnections(jwtUserId.toString())
-
-                    val connectionId = "${jwtUserId}_${UUID.randomUUID()}"
-
-                    redisManager.monitorSubscription(jwtUserId.toString(), connectionId)
-
-                    if (role != "user") {
-                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role"))
-                        return@webSocketRaw
-                    }
-
-                    val closeReason = withContext(dispatcherProvider.processing) {
-                        validateSession(jwtUserId, pathUserId, logger)
-                    }
-
-                    closeReason?.let {
-                        close(it)
-                        return@webSocketRaw
-                    }
-
-                    try {
-                        logger.info("[CONN|{}] Opening connection", connectionId)
-                        withContext(dispatcherProvider.websocket) {
-                            webSocketManager.handleSession(this@webSocketRaw, jwtUserId!!, connectionId)
-                        }
-                        logger.info("[CONN|{}] Connection active", connectionId)
-
-                    } catch (e: Exception) {
-                        logger.error("[CONN|{}] Error: {}", connectionId, e.message)
-                        close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
-                    } finally {
-                        logger.info("[CONN|{}] Closing connection", connectionId)
-                        val userId = webSocketManager.extractUserId(connectionId)
-                        webSocketManager.cleanupConnection(connectionId, userId)
-                    }
+                } catch (e: Exception) {
+                    logger.error("[CONN|{}] Error: {}", connectionId, e.message)
+                    close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
+                } finally {
+                    logger.info("[CONN|{}] Closing connection", connectionId)
+                    val userId = webSocketManager.extractUserId(connectionId)
+                    webSocketManager.cleanupConnection(connectionId)
                 }
             }
         }
+        authenticate("auth-service") {
+            webSocketRaw("/bot") {
+                val protocol = call.request.headers["Sec-WebSocket-Protocol"]
+                if (protocol != null && !isValidJwtStructure(protocol)) {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token structure"))
+                    logger.info("[SEC-WebSocket-Protocol] {}", protocol)
+                    return@webSocketRaw
+                }
+
+                val principal = call.principal<JWTPrincipal>()
+                val jwtToken = principal?.payload?.getClaim("token")?.asString()
+                val role = principal?.payload?.getClaim("role")?.asString()
+                logger.debug("JWT Bot Token: $jwtToken, Role: $role")
+
+                if (role != "service") {
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role for bot"))
+                    logger.info("Invalid role for bot: {}", role)
+                    return@webSocketRaw
+                }
+                cleanupExistingConnections(jwtToken.toString(), webSocketManager)
+
+
+                val botId = UUID.randomUUID()
+
+                val connectionId = "bot_${botId}"
+
+                try {
+                    logger.info("[CONN|{}] Opening bot connection", connectionId)
+                    withContext(dispatcherProvider.websocket) {
+                        webSocketManager.handleBotSession(this@webSocketRaw, jwtToken.toString(), connectionId)
+                    }
+                    logger.info("[CONN|{}] Bot connection active", connectionId)
+                } catch (e: Exception) {
+                    logger.error("[CONN|{}] Error: {}", connectionId, e.message)
+                    close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Server error"))
+                } finally {
+                    logger.info("[CONN|{}] Closing bot connection", connectionId)
+                    webSocketManager.cleanupConnection(connectionId)
+                }
+            }
+
+        }
+
     }
+
     scope.launch {
         webSocketManager.monitorConnections()
     }
@@ -128,15 +166,17 @@ private fun validateSession(jwtUserId: String?, pathUserId: String?, logger: Log
     }
 }
 
-private suspend fun cleanupExistingConnections(userId: String) {
-    val currentConnectionId = "${userId}_${UUID.randomUUID()}" // Get actual new ID
-    dependencyProvider.redisManager.getActiveSessionsForUser(userId)
-        .filter { it != currentConnectionId } // Prevent killing new connection
-        .forEach { connectionId ->
-            if (dependencyProvider.webSocketManager.activeConnections.containsKey(connectionId)) {
-                logger.info("Closing stale connection $connectionId")
-                dependencyProvider.webSocketManager.cleanupConnection(connectionId, userId)
-            }
+private suspend fun cleanupExistingConnections(userId: String, webSocketManager: WebSocketManager) {
+    webSocketManager.getActiveSessionsForUser(userId).forEach { connectionId ->
+        if (webSocketManager.activeConnections.containsKey(connectionId)) {
+            logger.info("Closing stale connection $connectionId")
+            webSocketManager.cleanupConnection(connectionId)
         }
+    }
 }
 
+private fun handleProtocolHeader(call: PipelineCall) {
+    call.request.headers["Sec-WebSocket-Protocol"]?.let { protocol ->
+        call.response.headers.append("Sec-WebSocket-Protocol", protocol)
+    }
+}

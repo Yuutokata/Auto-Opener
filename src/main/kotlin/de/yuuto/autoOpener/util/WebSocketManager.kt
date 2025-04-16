@@ -1,8 +1,10 @@
 package de.yuuto.autoOpener.util
 
 import com.github.benmanes.caffeine.cache.Caffeine
+import de.yuuto.autoOpener.dataclass.BotResponse
 import de.yuuto.autoOpener.dataclass.ConnectionMetrics
 import de.yuuto.autoOpener.dataclass.WebSocketMessage
+import de.yuuto.autoOpener.dataclass.WebsocketReceive
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -26,26 +28,25 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val processedMessages = Caffeine.newBuilder().expireAfterWrite(1, TimeUnit.MINUTES).build<String, Boolean>()
 
-    private lateinit var redis: RedisManager
+    private val userSessions = ConcurrentHashMap<String, MutableSet<String>>()
+    private val botSessions = ConcurrentHashMap<String, MutableSet<String>>()
 
     init {
         scope.launch {
             while (isActive) {
-                logConnectionStats()
+                synchronized(activeConnections) { // Ensure thread-safe access
+                    logConnectionStats()
+                    verifySessionIntegrity()
+                }
+                verifySessions() // Periodic session verification
                 delay(60.seconds)
-                logger.info(
-                    "Current active connections: ${activeConnections.size} | " + "Connection metrics: ${connectionMetrics.size} | " + "Connection timestamps: ${connectionTimestamps.size}"
-                )
+                synchronized(activeConnections) { // Log after ensuring updates are complete
+                    logger.info(
+                        "Current active connections: ${activeConnections.size} | " + "Connection metrics: ${connectionMetrics.size} | " + "Connection timestamps: ${connectionTimestamps.size}"
+                    )
+                }
             }
         }
-    }
-
-    fun setRedisManager(redisManager: RedisManager) {
-        this.redis = redisManager
-    }
-
-    internal fun getSessionById(connectionId: String): WebSocketSession? {
-        return activeConnections[connectionId]
     }
 
     fun shutdown() {
@@ -54,6 +55,59 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         connectionMetrics.clear()
 
         logger.info("WebSocketManager resources released")
+    }
+
+    private fun storeUserSession(userId: String, connectionId: String) {
+        userSessions.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(connectionId)
+        logger.debug("Stored user session $connectionId for $userId")
+    }
+
+    fun storeBotSession(botId: String, connectionId: String) {
+        botSessions.computeIfAbsent(botId) { ConcurrentHashMap.newKeySet() }.add(connectionId)
+        logger.debug("Stored bot session $connectionId")
+    }
+
+    suspend fun handleBotSession(session: WebSocketSession, botId: String, connectionId: String) {
+        try {
+            logger.debug("[CONN|{}] Processing bot session start", connectionId)
+            session.send(Frame.Text(Json.encodeToString(mapOf("status" to "connected"))))
+
+            registerBotConnection(connectionId, session, botId)
+            delay(100)
+            processIncomingMessages(connectionId, botId) // Reuse the message processing logic
+        } catch (e: ClosedReceiveChannelException) {
+            logger.info("[$connectionId] Bot graceful disconnect")
+        } catch (e: IOException) {
+            logger.error("[$connectionId] | Bot IO error: ${e.message}", e)
+        } catch (e: Exception) {
+            logger.error("[$connectionId] | Bot unexpected error: ${e.message}", e)
+        } finally {
+            cleanupConnection(connectionId)
+        }
+    }
+
+
+    private fun registerBotConnection(
+        connectionId: String, session: WebSocketSession, botId: String
+    ) {
+        synchronized(activeConnections) {
+            activeConnections[connectionId] = session
+            connectionTimestamps[connectionId] = System.currentTimeMillis()
+        }
+        storeBotSession(botId, connectionId)
+        logger.info("[$connectionId] | New bot connection registered")
+    }
+
+    fun getActiveSessionsForBot(botId: String): List<String> {
+        return botSessions[botId]?.toList() ?: emptyList()
+    }
+
+    private fun removeBotSession(botId: String, connectionId: String) {
+        botSessions[botId]?.remove(connectionId)
+        if (botSessions[botId]?.isEmpty() == true) {
+            botSessions.remove(botId)
+        }
+        logger.debug("Removed session $connectionId for bot $botId")
     }
 
     suspend fun handleSession(session: WebSocketSession, userId: String, connectionId: String) {
@@ -67,17 +121,140 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         } catch (e: Exception) {
             logger.error("[$connectionId] | $userId Unexpected error: ${e.message}", e)
         } finally {
-            cleanupConnection(connectionId, userId)
+            cleanupConnection(connectionId)
+        }
+    }
+
+    private suspend fun handleBotMessage(connectionId: String, frame: Frame.Text, botId: String) =
+        withContext(dispatcherProvider.websocket) {
+            val text = frame.readText()
+            logger.debug("[$connectionId] | $botId Received bot message: ${text.take(50)}")
+            try {
+                val websocketReceive = Json.decodeFromString<WebsocketReceive>(text)
+
+                if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
+                    logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+                    sendBotResponse(connectionId, "error", "Invalid user ID format", websocketReceive.userId)
+                    return@withContext
+                }
+                
+                val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
+                if (activeSessions.isEmpty()) {
+                    logger.warn("[$connectionId] | $botId No active sessions found for user ${websocketReceive.userId}")
+                    sendBotResponse(connectionId, "warn", "No active sessions found for user", websocketReceive.userId)
+                    return@withContext
+                }
+                
+                var successCount = 0
+                activeSessions.forEach { userConnectionId ->
+                    try {
+                        sendMessageToClient(
+                            userConnectionId, Json.encodeToString(websocketReceive.message), websocketReceive.userId
+                        )
+                        successCount++
+                        logger.info("[$connectionId] | $botId Message forwarded to user ${websocketReceive.userId}")
+                    } catch (e: Exception) {
+                        logger.error("[$connectionId] | $botId Failed to send message to ${websocketReceive.userId}: ${e.message}")
+                    }
+                    updateActivityTimestamp(connectionId)
+                }
+                
+                // Send success response to bot
+                if (successCount > 0) {
+                    sendBotResponse(
+                        connectionId, 
+                        "success", 
+                        "Message delivered to ${successCount}/${activeSessions.size} active sessions", 
+                        websocketReceive.userId
+                    )
+                } else {
+                    sendBotResponse(
+                        connectionId,
+                        "error",
+                        "Failed to deliver message to any active sessions",
+                        websocketReceive.userId
+                    )
+                }
+            } catch (e: Exception) {
+                logger.error("[$connectionId] | $botId Error processing bot message: ${e.message}", e)
+                sendBotResponse(connectionId, "error", "Error processing message: ${e.message}")
+            }
+        }
+
+    private suspend fun sendBotResponse(
+        connectionId: String, 
+        status: String, 
+        message: String, 
+        userId: String? = null
+    ) {
+        val session = activeConnections[connectionId] ?: run {
+            logger.warn("[$connectionId] Cannot send response to bot - connection not found")
+            return
+        }
+        
+        val response = BotResponse(status, message, userId)
+        try {
+            session.outgoing.send(Frame.Text(Json.encodeToString(response)))
+            logger.debug("[$connectionId] Bot response sent: $status - $message")
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Failed to send response to bot: ${e.message}")
+        }
+    }
+
+    private fun storeSession(userId: String, connectionId: String) {
+        userSessions.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(connectionId)
+        logger.debug("Stored session $connectionId for user $userId")
+    }
+
+    private fun removeSession(userId: String, connectionId: String) {
+        userSessions[userId]?.remove(connectionId)
+        if (userSessions[userId]?.isEmpty() == true) {
+            userSessions.remove(userId)
+        }
+        logger.debug("Removed session $connectionId for user $userId")
+    }
+
+    fun getActiveSessionsForUser(userId: String): List<String> {
+        return userSessions[userId]?.toList() ?: emptyList()
+    }
+
+    private fun verifySessions() {
+        val zombieSessions = mutableListOf<Pair<String, String>>()
+        userSessions.forEach { (userId, sessions) ->
+            sessions.forEach { sessionId ->
+                if (!activeConnections.containsKey(sessionId)) {
+                    zombieSessions.add(userId to sessionId)
+                }
+            }
+        }
+        zombieSessions.forEach { (userId, sessionId) ->
+            logger.warn("Cleaning up zombie session: $sessionId for user $userId")
+            removeSession(userId, sessionId)
         }
     }
 
     private suspend fun registerConnection(
         connectionId: String, session: WebSocketSession, userId: String
     ) = withContext(dispatcherProvider.websocket) {
-        activeConnections[connectionId] = session
-        connectionTimestamps[connectionId] = System.currentTimeMillis()
-        redis.storeSession(userId, connectionId)
+        synchronized(activeConnections) { // Ensure thread-safe updates
+            activeConnections[connectionId] = session
+            connectionTimestamps[connectionId] = System.currentTimeMillis()
+        }
+        storeSession(userId, connectionId) // Store session in memory
         logger.info("[$connectionId] | $userId New connection registered")
+    }
+
+    private fun verifySessionIntegrity() {
+        activeConnections.keys.forEach { connectionId ->
+            if (!userSessions.values.any { it.contains(connectionId) } && !botSessions.values.any {
+                    it.contains(
+                        connectionId
+                    )
+                }) {
+                logger.error("[$connectionId] Orphaned connection detected")
+                scope.launch { cleanupConnection(connectionId) }
+            }
+        }
     }
 
     private suspend fun processIncomingMessages(connectionId: String, userId: String) {
@@ -108,14 +285,24 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     updateActivityTimestamp(connectionId)
                 }
 
-                is Frame.Text -> handleClientMessage(connectionId, frame)
+                is Frame.Text -> {
+                    updateActivityTimestamp(connectionId)
+                    if (connectionId.startsWith("bot_")) {
+                        handleBotMessage(connectionId, frame, userId)
+                    } else {
+                        handleClientMessage(connectionId, frame)
+                    }
+                }
+
                 is Frame.Binary -> {
+                    updateActivityTimestamp(connectionId)
                     val message = frame.readBytes().decodeToString()
                     logger.info("[$connectionId] | $userId Received binary: $message")
                 }
 
                 is Frame.Close -> {
-                    logger.info("[$connectionId] | $userId Close frame received")
+                    val reason = frame.readReason()
+                    logger.info("[$connectionId] | $userId Close frame received with reason: $reason")
                     closeAndCleanupConnection(connectionId, session)
                 }
             }
@@ -166,10 +353,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             }
         }
 
-    private fun updateActivityTimestamp(connectionId: String) {
-        connectionTimestamps[connectionId] = System.currentTimeMillis()
+    internal fun updateActivityTimestamp(connectionId: String) {
+        synchronized(connectionTimestamps) {
+            connectionTimestamps[connectionId] = System.currentTimeMillis()
+        }
     }
-
     private suspend fun validateMessageFormat(message: String): Boolean {
         return withContext(dispatcherProvider.processing) {
             message.run {
@@ -185,49 +373,26 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
+    internal suspend fun cleanupConnection(connectionId: String) = withContext(dispatcherProvider.websocket) {
+        synchronized(activeConnections) {
+            activeConnections.remove(connectionId)
+            connectionTimestamps.remove(connectionId)
+            connectionMetrics.remove(connectionId)
 
-    internal suspend fun cleanupConnection(connectionId: String, userId: String) =
-        withContext(dispatcherProvider.websocket) {
-            try {
-                val lockKey = "connection-cleanup:$userId"
-                val lock = redis.client.getLock(lockKey)
-
-                try {
-                    // Use a short timeout for lock acquisition
-                    if (lock.tryLock(2, 5, TimeUnit.SECONDS)) {
-                        try {
-                            // Remove from Redis
-                            activeConnections.remove(connectionId)
-                            connectionTimestamps.remove(connectionId)
-                            connectionMetrics.remove(connectionId)
-
-                            redis.removeSession(userId, connectionId)
-                            redis.stopMonitoringSubscription(userId)
-                            logger.info("[$connectionId] | $userId Connection cleaned up")
-                        } finally {
-                            // Only unlock if we own the lock
-                            if (lock.isHeldByCurrentThread()) {
-                                lock.unlock()
-                            }
-                        }
-                    } else {
-                        logger.warn("[$connectionId] | $userId Lock acquisition failed for cleanup")
-                    }
-                } catch (e: Exception) {
-                    logger.error("[$connectionId] Error during Redis cleanup: ${e.message}", e)
-                    // Still ensure we release the lock if we hold it
-                    if (lock.isHeldByCurrentThread()) {
-                        try {
-                            lock.unlock()
-                        } catch (e: Exception) {
-                            logger.error("[$connectionId] Error unlocking: ${e.message}", e)
-                        }
-                    }
+            // Check if this is a user connection
+            val userId = extractUserId(connectionId)
+            if (connectionId.contains("_")) {
+                if (connectionId.startsWith("bot_")) {
+                    val botId = connectionId.split("_")[1]
+                    removeBotSession(botId, connectionId)
+                } else {
+                    removeSession(userId, connectionId)
                 }
-            } catch (e: Exception) {
-                logger.error("[$connectionId] Error during connection cleanup: ${e.message}", e)
             }
+
+            logger.info("[$connectionId] Connection fully cleaned up")
         }
+    }
 
     internal suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession) {
         try {
@@ -236,23 +401,17 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             logger.error("[$connectionId] Error closing connection: ${e.message}")
         } finally {
             val userId = extractUserId(connectionId)
-            cleanupConnection(connectionId, userId)
+            cleanupConnection(connectionId)
         }
     }
 
     fun monitorConnections() {
         scope.launch {
             while (isActive) {
-                val currentTime = System.currentTimeMillis()
-                val inactivityThreshold = Config.getInactivityThreshold()
-
                 activeConnections.forEach { (connectionId, session) ->
-                    val lastActivity = connectionTimestamps[connectionId] ?: 0
-                    val inactiveDuration = currentTime - lastActivity
-
-                    if (inactiveDuration > inactivityThreshold) {
-                        val pingId = "ping-${UUID.randomUUID()}"
-                        sendPing(connectionId, session, pingId)
+                    val lastActive = connectionTimestamps[connectionId] ?: 0
+                    if (System.currentTimeMillis() - lastActive > Config.getInactivityThreshold()) {
+                        sendHealthPing(connectionId, session)
                     }
                 }
                 delay(Config.getHealthCheckInterval().seconds)
@@ -260,24 +419,35 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    private suspend fun sendPing(connectionId: String, session: WebSocketSession, pingId: String) {
+    private suspend fun sendHealthPing(connectionId: String, session: WebSocketSession) {
+        val pingId = "ping-${UUID.randomUUID()}"
         val pingDeferred = CompletableDeferred<Unit>().also {
             pendingPings[pingId] = it
         }
-        logger.info("[$connectionId] Ping: $pingId")
+
         try {
             session.outgoing.send(Frame.Ping(pingId.toByteArray()))
-            withTimeoutOrNull((Config.getPongTimeout()) * 1000L) {
+            withTimeoutOrNull(Config.getPongTimeout().seconds) {
                 pingDeferred.await()
             } ?: run {
-                logger.warn("[$connectionId] Ping timeout - terminating")
-                closeAndCleanupConnection(connectionId, session)
+                logger.warn("[$connectionId] Ping timeout")
+                closeConnection(connectionId, session)
             }
         } catch (e: Exception) {
-            logger.error("[$connectionId] Ping error: ${e.message}")
-            closeAndCleanupConnection(connectionId, session)
+            logger.error("[$connectionId] Ping failed: ${e.message}")
+            closeConnection(connectionId, session)
         } finally {
             pendingPings.remove(pingId)
+        }
+    }
+
+    private suspend fun closeConnection(connectionId: String, session: WebSocketSession) {
+        try {
+            session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Health check failed"))
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Close error: ${e.message}")
+        } finally {
+            cleanupConnection(connectionId)
         }
     }
 

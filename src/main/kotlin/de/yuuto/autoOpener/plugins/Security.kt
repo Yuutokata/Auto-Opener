@@ -10,11 +10,13 @@ import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
 import io.ktor.server.plugins.defaultheaders.*
 import io.ktor.server.response.*
+import org.slf4j.LoggerFactory
 
 fun Application.configureSecurity() {
     val secret = Config.getSecret()
     val issuer = Config.getIssuer()
     val audience = Config.getAudience()
+    val logger = LoggerFactory.getLogger(org.slf4j.Logger::class.java)
 
     authentication {
         jwt("auth-service") {
@@ -24,16 +26,28 @@ fun Application.configureSecurity() {
             )
             validate { credential ->
                 val tokenClaim = credential.payload.getClaim("token").asString()
-                if (credential.payload.audience.contains(audience) && credential.payload.getClaim("role")
-                        .asString() == "service" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(Regex("^[a-zA-Z0-9]{32,64}$"))
+                val role = credential.payload.getClaim("role").asString()
+
+                if (credential.payload.audience.contains(audience) && role == "service" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(
+                        Regex("^[a-zA-Z0-9]{32,128}$")
+                    )
                 ) {
-                    JWTPrincipal(credential.payload)
-                } else false
+                    if (isValidUserToken(role = role, token = tokenClaim)) {
+                        JWTPrincipal(credential.payload)
+                    } else {
+                        logger.warn("Service token validation failed")
+                        null
+                    }
+                } else {
+                    logger.warn("JWT validation failed - audience: ${credential.payload.audience}, role: $role")
+                    null
+                }
             }
             challenge { _, _ ->
                 call.respond("Authentication failed: Invalid service token")
                 return@challenge
             }
+            authHeader { call -> extractJwtFromHeaders(call) }
         }
 
         jwt("auth-user") {
@@ -43,25 +57,19 @@ fun Application.configureSecurity() {
             )
             validate { credential ->
                 val tokenClaim = credential.payload.getClaim("token").asString()
-                if (credential.payload.audience.contains(audience) && credential.payload.getClaim("role")
-                        .asString() == "user" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(Regex("^\\d{15,20}$"))
+                val role = credential.payload.getClaim("role").asString()
+                if (credential.payload.audience.contains(audience) && role == "user" && !tokenClaim.isNullOrEmpty() && tokenClaim.matches(
+                        Regex("^\\d{15,20}$")
+                    )
                 ) {
-                    if (isValidUserToken(tokenClaim)) {
+                    if (isValidUserToken(tokenClaim, role)) {
                         JWTPrincipal(credential.payload)
                     } else {
                         false
                     }
                 } else false
             }
-            authHeader { call ->
-                call.request.headers["Sec-WebSocket-Protocol"]?.let { token ->
-                    if (isValidJwtStructure(token)) {
-                        HttpAuthHeader.Single("Bearer", token)
-                    } else {
-                        null
-                    }
-                }
-            }
+            authHeader { call -> extractJwtFromHeaders(call) }
             challenge { _, _ ->
                 call.respond("Authentication failed: Invalid user token")
             }
@@ -69,11 +77,32 @@ fun Application.configureSecurity() {
     }
 }
 
-private suspend fun isValidUserToken(token: String): Boolean {
-    val userExists =
-        dependencyProvider.mongoClient.userExistsInCache(token) || dependencyProvider.mongoClient.userExists(token)
-    val serviceToken = Config.getBotToken().any { it == token }
-    return userExists || serviceToken
+private fun extractJwtFromHeaders(call: ApplicationCall): HttpAuthHeader? {
+    val authHeader = call.request.headers["Authorization"]
+    if (!authHeader.isNullOrBlank() && authHeader.startsWith("Bearer ")) {
+        val token = authHeader.removePrefix("Bearer ").trim()
+        return HttpAuthHeader.Single("Bearer", token)
+    }
+
+    val wsProtocol = call.request.headers["Sec-WebSocket-Protocol"]
+    if (!wsProtocol.isNullOrBlank() && isValidJwtStructure(wsProtocol)) {
+        return HttpAuthHeader.Single("Bearer", wsProtocol)
+    }
+
+    return null
+}
+
+private suspend fun isValidUserToken(token: String, role: String): Boolean {
+    if (role == "user") {
+        val userExists =
+            dependencyProvider.mongoClient.userExistsInCache(token) || dependencyProvider.mongoClient.userExists(token)
+        return userExists
+    }
+    if (role == "service") {
+        val serviceToken = Config.getBotToken().any { it == token }
+        return serviceToken
+    }
+    return false
 }
 
 internal fun isValidJwtStructure(token: String): Boolean {

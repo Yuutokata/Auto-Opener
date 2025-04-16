@@ -21,17 +21,16 @@ dependencies {
     implementation("io.ktor:ktor-serialization-jackson-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
     implementation("io.ktor:ktor-server-default-headers")
-    implementation("ch.qos.logback:logback-classic:1.5.16")
+    implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-    implementation("org.redisson:redisson:3.23.3")
     implementation("io.micrometer:micrometer-registry-prometheus:1.11.3")
     implementation("io.ktor:ktor-server-metrics-micrometer")
     implementation("io.ktor:ktor-server-call-logging")
     implementation("com.auth0:java-jwt:4.4.0")
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.0")
-    implementation("io.ktor:ktor-server-rate-limit")
     implementation("org.litote.kmongo:kmongo:5.2.0")
     implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
+    implementation("io.ktor:ktor-server-cors:3.0.3")
 }
 
 

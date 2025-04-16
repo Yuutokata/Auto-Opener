@@ -1,55 +1,57 @@
 package de.yuuto.autoOpener.routes
 
+import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import de.yuuto.autoOpener.util.DispatcherProvider
-import de.yuuto.autoOpener.util.RedisManager
+import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.http.*
 import io.ktor.server.auth.*
-import io.ktor.server.plugins.ratelimit.RateLimitName
-import io.ktor.server.plugins.ratelimit.rateLimit
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 
-fun Route.messageRoutes(dispatcherProvider: DispatcherProvider, redisManager: RedisManager) {
+fun Route.messageRoutes(dispatcherProvider: DispatcherProvider, webSocketManager: WebSocketManager) {
     val logger = LoggerFactory.getLogger(Route::class.java)
-    rateLimit(RateLimitName("service")) {
-        authenticate("auth-service") {
-            get("/send_message") {
-                val (receiverID, message, isValid) = withContext(dispatcherProvider.processing) {
-                    val id = call.queryParameters["user_id"]
-                    val msg = call.queryParameters["message"]
+    authenticate("auth-service") {
+        post("/send_message") {
+            val receiverID = call.queryParameters["user_id"]
 
-                    val valid = !(id.isNullOrBlank() || !id.matches(Regex("\\d+")) || msg.isNullOrBlank())
-                    Triple(id, msg, valid)
-                }
+            if (receiverID.isNullOrBlank() || !receiverID.matches(Regex("^\\d{15,20}$"))) {
+                call.response.status(HttpStatusCode.BadRequest)
+                call.respondText("Invalid user ID.")
+                logger.warn("Invalid user ID: $receiverID")
+                return@post
+            }
 
-                if (receiverID.isNullOrBlank() || !receiverID.matches(Regex("\\d+"))) {
-                    call.response.status(HttpStatusCode.BadRequest)
-                    call.respondText("Invalid user ID.")
-                    logger.warn("Invalid user ID provided: $receiverID")
-                    return@get
-                }
+            try {
+                val messageData = call.receive<WebSocketMessage>()
 
-                if (message.isNullOrBlank()) {
-                    call.response.status(HttpStatusCode.BadRequest)
-                    call.respondText("Message cannot be empty.")
-                    logger.warn("Empty message provided")
-                    return@get
-                }
-
-                try {
-                    withContext(dispatcherProvider.network) {
-                        redisManager.publish(receiverID, message)
+                withContext(dispatcherProvider.network) {
+                    val activeSessions = webSocketManager.getActiveSessionsForUser(receiverID)
+                    if (activeSessions.isEmpty()) {
+                        call.response.status(HttpStatusCode.NotFound)
+                        call.respondText("No active sessions found for user.")
+                        logger.warn("No active sessions for user $receiverID")
+                        return@withContext
                     }
 
-                    call.respondText("Message sent successfully.")
-                    logger.info("Message sent to user $receiverID with message $message")
-                } catch (e: Exception) {
-                    call.response.status(HttpStatusCode.InternalServerError)
-                    call.respondText("Failed to send message.")
-                    logger.error("Error sending message to user $receiverID", e)
+                    activeSessions.forEach { connectionId ->
+                        try {
+                            webSocketManager.handleIncomingMessage(connectionId, receiverID, messageData.url)
+                        } catch (e: IllegalStateException) {
+                            logger.warn("Skipping closed connection: $connectionId")
+                            webSocketManager.cleanupConnection(connectionId)
+                        }
+                    }
                 }
+
+                call.respondText("Message sent successfully.")
+                logger.info("Message sent to user $receiverID with message ${messageData.message}")
+            } catch (e: Exception) {
+                call.response.status(HttpStatusCode.InternalServerError)
+                call.respondText("Failed to send message: ${e.message}")
+                logger.error("Error sending message to user $receiverID", e)
             }
         }
     }
