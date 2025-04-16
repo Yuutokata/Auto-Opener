@@ -1,6 +1,7 @@
 package de.yuuto.autoOpener.util
 
 import com.github.benmanes.caffeine.cache.Caffeine
+import de.yuuto.autoOpener.dataclass.BotResponse
 import de.yuuto.autoOpener.dataclass.ConnectionMetrics
 import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import de.yuuto.autoOpener.dataclass.WebsocketReceive
@@ -133,34 +134,72 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
                 if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
                     logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
+                    sendBotResponse(connectionId, "error", "Invalid user ID format", websocketReceive.userId)
                     return@withContext
                 }
-                if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
-                    logger.error("[$connectionId] | $botId Invalid user ID format: ${websocketReceive.userId}")
-
-                    return@withContext
-                }
+                
                 val activeSessions = getActiveSessionsForUser(websocketReceive.userId)
                 if (activeSessions.isEmpty()) {
                     logger.warn("[$connectionId] | $botId No active sessions found for user ${websocketReceive.userId}")
+                    sendBotResponse(connectionId, "warn", "No active sessions found for user", websocketReceive.userId)
                     return@withContext
                 }
+                
+                var successCount = 0
                 activeSessions.forEach { userConnectionId ->
                     try {
                         sendMessageToClient(
                             userConnectionId, Json.encodeToString(websocketReceive.message), websocketReceive.userId
                         )
+                        successCount++
                         logger.info("[$connectionId] | $botId Message forwarded to user ${websocketReceive.userId}")
                     } catch (e: Exception) {
                         logger.error("[$connectionId] | $botId Failed to send message to ${websocketReceive.userId}: ${e.message}")
                     }
                     updateActivityTimestamp(connectionId)
                 }
+                
+                // Send success response to bot
+                if (successCount > 0) {
+                    sendBotResponse(
+                        connectionId, 
+                        "success", 
+                        "Message delivered to ${successCount}/${activeSessions.size} active sessions", 
+                        websocketReceive.userId
+                    )
+                } else {
+                    sendBotResponse(
+                        connectionId,
+                        "error",
+                        "Failed to deliver message to any active sessions",
+                        websocketReceive.userId
+                    )
+                }
             } catch (e: Exception) {
                 logger.error("[$connectionId] | $botId Error processing bot message: ${e.message}", e)
+                sendBotResponse(connectionId, "error", "Error processing message: ${e.message}")
             }
         }
 
+    private suspend fun sendBotResponse(
+        connectionId: String, 
+        status: String, 
+        message: String, 
+        userId: String? = null
+    ) {
+        val session = activeConnections[connectionId] ?: run {
+            logger.warn("[$connectionId] Cannot send response to bot - connection not found")
+            return
+        }
+        
+        val response = BotResponse(status, message, userId)
+        try {
+            session.outgoing.send(Frame.Text(Json.encodeToString(response)))
+            logger.debug("[$connectionId] Bot response sent: $status - $message")
+        } catch (e: Exception) {
+            logger.error("[$connectionId] Failed to send response to bot: ${e.message}")
+        }
+    }
 
     private fun storeSession(userId: String, connectionId: String) {
         userSessions.computeIfAbsent(userId) { ConcurrentHashMap.newKeySet() }.add(connectionId)
@@ -433,3 +472,4 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 }
+

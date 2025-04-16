@@ -3,6 +3,7 @@ package de.yuuto.autoOpener.plugins
 import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.WebSocketManager
 import io.ktor.server.application.*
+import io.ktor.server.application.call
 import io.ktor.server.auth.*
 import io.ktor.server.auth.jwt.*
 import io.ktor.server.request.*
@@ -21,6 +22,8 @@ import kotlin.time.Duration.Companion.seconds
 
 private val logger = LoggerFactory.getLogger("WebSocketLogger")
 
+
+
 fun Application.configureWebsockets(
     dispatcherProvider: DispatcherProvider, webSocketManager: WebSocketManager
 ) {
@@ -35,11 +38,9 @@ fun Application.configureWebsockets(
     }
 
     intercept(ApplicationCallPipeline.Plugins) {
-        if (call.request.path().startsWith("/listen/")) {
-            val protocol = call.request.headers["Sec-WebSocket-Protocol"]
-            if (protocol != null) {
-                call.response.headers.append("Sec-WebSocket-Protocol", protocol)
-            }
+        when {
+            call.request.path().startsWith("/listen/") -> handleProtocolHeader(call)
+            call.request.path() == "/bot" -> handleProtocolHeader(call)
         }
     }
 
@@ -99,17 +100,18 @@ fun Application.configureWebsockets(
                 val protocol = call.request.headers["Sec-WebSocket-Protocol"]
                 if (protocol != null && !isValidJwtStructure(protocol)) {
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid token structure"))
+                    logger.info("[SEC-WebSocket-Protocol] {}", protocol)
                     return@webSocketRaw
                 }
 
                 val principal = call.principal<JWTPrincipal>()
                 val jwtToken = principal?.payload?.getClaim("token")?.asString()
-                val pathBotId = call.parameters["botId"]
                 val role = principal?.payload?.getClaim("role")?.asString()
-                logger.debug("JWT Bot Token: $jwtToken, Path Bot ID: $pathBotId, Role: $role")
+                logger.debug("JWT Bot Token: $jwtToken, Role: $role")
 
                 if (role != "service") {
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role for bot"))
+                    logger.info("Invalid role for bot: {}", role)
                     return@webSocketRaw
                 }
                 cleanupExistingConnections(jwtToken.toString(), webSocketManager)
@@ -170,5 +172,11 @@ private suspend fun cleanupExistingConnections(userId: String, webSocketManager:
             logger.info("Closing stale connection $connectionId")
             webSocketManager.cleanupConnection(connectionId)
         }
+    }
+}
+
+private fun handleProtocolHeader(call: PipelineCall) {
+    call.request.headers["Sec-WebSocket-Protocol"]?.let { protocol ->
+        call.response.headers.append("Sec-WebSocket-Protocol", protocol)
     }
 }

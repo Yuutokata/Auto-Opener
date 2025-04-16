@@ -30,6 +30,7 @@ dependencies {
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.0")
     implementation("org.litote.kmongo:kmongo:5.2.0")
     implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
+    implementation("io.ktor:ktor-server-cors:3.0.3")
 }
 
 
