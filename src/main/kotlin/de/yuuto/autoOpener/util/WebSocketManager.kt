@@ -247,6 +247,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 }
 
                 is Frame.Text -> {
+                    updateActivityTimestamp(connectionId)
                     if (connectionId.startsWith("bot_")) {
                         handleBotMessage(connectionId, frame, userId)
                     } else {
@@ -255,12 +256,14 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 }
 
                 is Frame.Binary -> {
+                    updateActivityTimestamp(connectionId)
                     val message = frame.readBytes().decodeToString()
                     logger.info("[$connectionId] | $userId Received binary: $message")
                 }
 
                 is Frame.Close -> {
-                    logger.info("[$connectionId] | $userId Close frame received")
+                    val reason = frame.readReason()
+                    logger.info("[$connectionId] | $userId Close frame received with reason: $reason")
                     closeAndCleanupConnection(connectionId, session)
                 }
             }
@@ -312,9 +315,10 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
 
     internal fun updateActivityTimestamp(connectionId: String) {
-        connectionTimestamps[connectionId] = System.currentTimeMillis()
+        synchronized(connectionTimestamps) {
+            connectionTimestamps[connectionId] = System.currentTimeMillis()
+        }
     }
-
     private suspend fun validateMessageFormat(message: String): Boolean {
         return withContext(dispatcherProvider.processing) {
             message.run {

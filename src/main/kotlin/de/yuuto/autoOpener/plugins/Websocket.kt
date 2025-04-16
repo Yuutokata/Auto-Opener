@@ -29,7 +29,7 @@ fun Application.configureWebsockets(
 
     install(WebSockets) {
         pingPeriod = null
-        timeout = 50.seconds
+        timeout = 90.seconds
         maxFrameSize = 65536
         masking = false
     }
@@ -112,6 +112,8 @@ fun Application.configureWebsockets(
                     close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid role for bot"))
                     return@webSocketRaw
                 }
+                cleanupExistingConnections(jwtToken.toString(), webSocketManager)
+
 
                 val botId = UUID.randomUUID()
 
@@ -120,7 +122,7 @@ fun Application.configureWebsockets(
                 try {
                     logger.info("[CONN|{}] Opening bot connection", connectionId)
                     withContext(dispatcherProvider.websocket) {
-                        webSocketManager.handleBotSession(this@webSocketRaw, botId.toString(), connectionId)
+                        webSocketManager.handleBotSession(this@webSocketRaw, jwtToken.toString(), connectionId)
                     }
                     logger.info("[CONN|{}] Bot connection active", connectionId)
                 } catch (e: Exception) {
