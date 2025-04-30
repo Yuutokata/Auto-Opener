@@ -17,13 +17,16 @@ dependencies {
     implementation("io.ktor:ktor-server-auth-jvm")
     implementation("io.ktor:ktor-server-auth-jwt-jvm")
     implementation("io.ktor:ktor-server-websockets-jvm")
+
     implementation("io.ktor:ktor-server-content-negotiation-jvm")
     implementation("io.ktor:ktor-serialization-jackson-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
     implementation("io.ktor:ktor-server-default-headers")
+
     implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     implementation("io.micrometer:micrometer-registry-prometheus:1.11.3")
+
     implementation("io.ktor:ktor-server-metrics-micrometer")
     implementation("io.ktor:ktor-server-call-logging")
     implementation("com.auth0:java-jwt:4.4.0")
@@ -31,6 +34,16 @@ dependencies {
     implementation("org.litote.kmongo:kmongo:5.2.0")
     implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
     implementation("io.ktor:ktor-server-cors:3.0.3")
+
+    implementation("org.slf4j:slf4j-api:2.0.9")
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    implementation("com.github.loki4j:loki-logback-appender:1.5.1")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.15.2")
+
+    implementation("ch.qos.logback.contrib:logback-json-classic:0.1.5") // Or latest compatible version
+    implementation("ch.qos.logback.contrib:logback-jackson:0.1.5")
+
 }
 
 
