@@ -1,6 +1,7 @@
 package de.yuuto.autoOpener
 
 import de.yuuto.autoOpener.plugins.*
+import de.yuuto.autoOpener.plugins.startMetricsServer
 import de.yuuto.autoOpener.util.Config
 import de.yuuto.autoOpener.util.DispatcherProvider
 import de.yuuto.autoOpener.util.MongoClient
@@ -25,6 +26,10 @@ val dependencyProvider = DependencyProvider()
 
 fun main() {
     val logger = LoggerFactory.getLogger("Main")
+
+    // Start metrics server on a separate port
+    startMetricsServer(Config.getHost(), Config.getMetricsPort())
+    logger.info("Metrics server started on port ${Config.getMetricsPort()}")
 
     // Add shutdown hook to gracefully terminate resources
     Runtime.getRuntime().addShutdownHook(Thread {

@@ -86,7 +86,6 @@
     <!-- Root logger configuration -->
     <root level="${LOG_LEVEL:-INFO}">
         <appender-ref ref="ASYNC_CONSOLE"/>
-        <appender-ref ref="ASYNC_FILE"/>
         <appender-ref ref="LOKI"/>
     </root>
 

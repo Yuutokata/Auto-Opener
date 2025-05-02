@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 data class ConfigData(
     val host: String,
     val port: Int,
-    val redis: Redis,
+    val metricsPort: Int = 9090, // Default to 9090 if not specified
     val mongodb: MongoDB,
     val tokens: Tokens,
     val jwt: JWT,

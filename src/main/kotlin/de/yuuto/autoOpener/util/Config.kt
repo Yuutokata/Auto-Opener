@@ -25,8 +25,7 @@ object Config {
 
     fun getHost(): String = configData.host
     fun getPort(): Int = configData.port
-    fun getRedisHost(): String = configData.redis.host
-    fun getRedisPort(): Int = configData.redis.port
+    fun getMetricsPort(): Int = configData.metricsPort
     fun getMongoDBUri(): String = configData.mongodb.uri
     fun getMongoDBDatabase(): String = configData.mongodb.db
     fun getHealthCheckInterval(): Int = configData.healthCheckInterval
