@@ -5,6 +5,7 @@ import com.auth0.jwt.algorithms.Algorithm
 import de.yuuto.autoOpener.dataclass.TokenRequest
 import de.yuuto.autoOpener.util.Config
 import de.yuuto.autoOpener.util.DispatcherProvider
+import de.yuuto.autoOpener.util.MetricsService
 import de.yuuto.autoOpener.util.MongoClient
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -30,6 +31,16 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
         MDC.put("http_method", "POST")
         logger.info("Received token generation request")
 
+        // Track HTTP request
+        MetricsService.incrementHttpRequests(
+            MetricsService.createTags(
+                "endpoint" to "/token",
+                "method" to "POST"
+            )
+        )
+
+        val startTime = System.currentTimeMillis()
+
         try {
             val request = call.receive<TokenRequest>()
             val tokenInput = request.token
@@ -38,6 +49,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
             MDC.put("provided_token_identifier", tokenInput)
 
             if (tokenInput.isBlank()) {
+                // Track validation failure
+                MetricsService.incrementTokenValidationFailures(
+                    MetricsService.createTags(
+                        "reason" to "blank_token",
+                        "role" to role
+                    )
+                )
+
                 MDC.put("validation_error", "Token/ID is blank")
                 logger.warn("Token generation failed: Blank token/ID provided")
                 call.respond(HttpStatusCode.BadRequest, mapOf("error" to "A token/id is required"))
@@ -46,6 +65,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
             }
 
             if (role != "user" && role != "service") {
+                // Track validation failure
+                MetricsService.incrementTokenValidationFailures(
+                    MetricsService.createTags(
+                        "reason" to "invalid_role",
+                        "role" to role
+                    )
+                )
+
                 MDC.put("validation_error", "Invalid role: $role")
                 logger.warn("Token generation failed: Invalid role provided")
                 call.respond(
@@ -58,6 +85,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
             if (role == "user") {
                 MDC.put("user_id", tokenInput)
                 if (!tokenInput.matches(Regex("^\\d{15,20}$"))) {
+                    // Track validation failure
+                    MetricsService.incrementTokenValidationFailures(
+                        MetricsService.createTags(
+                            "reason" to "invalid_user_id_format",
+                            "role" to role
+                        )
+                    )
+
                     MDC.put("validation_error", "Invalid User ID format")
                     logger.warn("Token generation failed: Invalid User ID format")
                     call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid User ID format"))
@@ -67,6 +102,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
                 val userExists = mongoClient.userExists(tokenInput)
 
                 if (!userExists) {
+                    // Track validation failure
+                    MetricsService.incrementTokenValidationFailures(
+                        MetricsService.createTags(
+                            "reason" to "user_not_found",
+                            "role" to role
+                        )
+                    )
+
                     MDC.put("auth_status", "failure")
                     MDC.put("reason", "User ID not found")
                     logger.warn("Token generation failed: User ID not found")
@@ -86,6 +129,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
                 }
 
                 if (!validToken) {
+                    // Track validation failure
+                    MetricsService.incrementTokenValidationFailures(
+                        MetricsService.createTags(
+                            "reason" to "invalid_service_token",
+                            "role" to role
+                        )
+                    )
+
                     MDC.put("auth_status", "failure")
                     MDC.put("reason", "Invalid service token")
                     logger.warn("Token generation failed: Invalid service token")
@@ -103,6 +154,14 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
                     .withExpiresAt(Date(System.currentTimeMillis() + TimeUnit.DAYS.toMillis(3)))
                     .sign(Algorithm.HMAC256(secret))
             }
+
+            // Track successful token generation
+            MetricsService.incrementTokenGeneration(
+                MetricsService.createTags(
+                    "role" to role,
+                    "status" to "success"
+                )
+            )
 
             MDC.put("jwt_generated", "true")
             logger.info("JWT token generated successfully")
@@ -122,8 +181,17 @@ fun Route.generateToken(dispatcherProvider: DispatcherProvider, mongoClient: Mon
                 HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "Unknown error occurred"))
             )
         } finally {
+            // Record request duration
+            val requestDuration = System.currentTimeMillis() - startTime
+            MetricsService.recordHttpRequestDuration(
+                requestDuration,
+                MetricsService.createTags(
+                    "endpoint" to "/token",
+                    "method" to "POST"
+                )
+            )
+
             MDC.clear()
         }
     }
 }
-

@@ -3,6 +3,8 @@ package de.yuuto.autoOpener.util
 import com.mongodb.client.model.ReplaceOptions
 import de.yuuto.autoOpener.dataclass.SyncResult
 import de.yuuto.autoOpener.dataclass.User
+import de.yuuto.autoOpener.util.MetricsService
+import io.micrometer.core.instrument.Tags
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -39,6 +41,7 @@ class MongoClient(private val dispatcherProvider: DispatcherProvider) {
     private val userCache = ConcurrentHashMap<String, User>()
     private val cacheMutex = Mutex()
     private var cacheInitialized = false
+    private var lastCacheRefreshTime = 0L // Track when the cache was last refreshed
 
     suspend fun synchronizeUsers(incomingUsers: List<User>): SyncResult = withContext(dispatcherProvider.database) {
         MDC.put("event_type", "user_sync_start")
@@ -46,62 +49,110 @@ class MongoClient(private val dispatcherProvider: DispatcherProvider) {
         logger.debug("Starting user synchronization")
         MDC.clear()
 
-        val currentUsers = getAllUsersFromDB()
-        val currentUserIds = currentUsers.map { it.id }.toSet()
-        val incomingUserIds = incomingUsers.map { it.id }.toSet()
+        // Track user sync operation
+        MetricsService.incrementUserSyncOperations(
+            MetricsService.createTags("operation_type" to "full_sync")
+        )
 
-        // Check for duplicate IDs in incoming users
-        val duplicateIds = incomingUsers.groupBy { it.id }.filter { it.value.size > 1 }.keys
+        val startTime = System.currentTimeMillis()
 
-        if (duplicateIds.isNotEmpty()) {
-            MDC.put("event_type", "user_sync_warning")
-            MDC.put("duplicate_ids", duplicateIds.joinToString(","))
-            logger.warn("Found duplicate user IDs in incoming data")
+        try {
+            val currentUsers = getAllUsersFromDB()
+            val currentUserIds = currentUsers.map { it.id }.toSet()
+            val incomingUserIds = incomingUsers.map { it.id }.toSet()
+
+            // Check for duplicate IDs in incoming users
+            val duplicateIds = incomingUsers.groupBy { it.id }.filter { it.value.size > 1 }.keys
+
+            if (duplicateIds.isNotEmpty()) {
+                MDC.put("event_type", "user_sync_warning")
+                MDC.put("duplicate_ids", duplicateIds.joinToString(","))
+                logger.warn("Found duplicate user IDs in incoming data")
+                MDC.clear()
+            }
+
+            val usersToAdd = incomingUsers.filter { it.id !in currentUserIds }
+            val userIdsToRemove = currentUserIds.filter { it !in incomingUserIds }
+
+            MDC.put("event_type", "user_sync_analysis")
+            MDC.put("users_to_add", usersToAdd.size.toString())
+            MDC.put("users_to_remove", userIdsToRemove.size.toString())
+            logger.debug("Synchronization analysis complete")
             MDC.clear()
-        }
 
-        val usersToAdd = incomingUsers.filter { it.id !in currentUserIds }
-        val userIdsToRemove = currentUserIds.filter { it !in incomingUserIds }
+            val addedCount = if (usersToAdd.isNotEmpty()) {
+                usersToAdd.forEach { addUser(it) }
+                usersToAdd.size
+            } else 0
 
-        MDC.put("event_type", "user_sync_analysis")
-        MDC.put("users_to_add", usersToAdd.size.toString())
-        MDC.put("users_to_remove", userIdsToRemove.size.toString())
-        logger.debug("Synchronization analysis complete")
-        MDC.clear()
+            val removedCount = if (userIdsToRemove.isNotEmpty()) {
+                userIdsToRemove.forEach { removeUser(it) }
+                userIdsToRemove.size
+            } else 0
 
-        val addedCount = if (usersToAdd.isNotEmpty()) {
-            usersToAdd.forEach { addUser(it) }
-            usersToAdd.size
-        } else 0
+            val unchangedCount = currentUserIds.size - removedCount
 
-        val removedCount = if (userIdsToRemove.isNotEmpty()) {
-            userIdsToRemove.forEach { removeUser(it) }
-            userIdsToRemove.size
-        } else 0
-
-        val unchangedCount = currentUserIds.size - removedCount
-
-        SyncResult(
-            added = addedCount, removed = removedCount, unchanged = unchangedCount
-        ).also {
-            MDC.put("event_type", "user_sync_complete")
-            MDC.put("added_count", it.added.toString())
-            MDC.put("removed_count", it.removed.toString())
-            MDC.put("unchanged_count", it.unchanged.toString())
-            logger.info("User synchronization complete")
-            MDC.clear()
+            SyncResult(
+                added = addedCount, removed = removedCount, unchanged = unchangedCount
+            ).also {
+                MDC.put("event_type", "user_sync_complete")
+                MDC.put("added_count", it.added.toString())
+                MDC.put("removed_count", it.removed.toString())
+                MDC.put("unchanged_count", it.unchanged.toString())
+                logger.info("User synchronization complete")
+                MDC.clear()
+            }
+        } catch (e: Exception) {
+            // Track database operation error
+            MetricsService.incrementDbOperationErrors(
+                MetricsService.createTags("operation_type" to "user_sync")
+            )
+            throw e
+        } finally {
+            // Record operation duration
+            val duration = System.currentTimeMillis() - startTime
+            MetricsService.recordUserSyncDuration(
+                duration,
+                MetricsService.createTags("operation_type" to "full_sync")
+            )
         }
     }
 
+    /**
+     * Gets all users, preferably from cache
+     * Uses a more efficient approach with cache expiration tracking
+     */
     suspend fun getAllUsers(): List<User> = withContext(dispatcherProvider.processing) {
-        if (!cacheInitialized) {
-            MDC.put("event_type", "cache_miss")
-            logger.debug("Cache not initialized, refreshing cache")
+        // Track cache access time for expiration policy
+        val currentTime = System.currentTimeMillis()
+        val cacheAge = currentTime - lastCacheRefreshTime
+        val maxCacheAge = 5 * 60 * 1000 // 5 minutes
+
+        // Refresh cache if not initialized or too old
+        if (!cacheInitialized || cacheAge >= maxCacheAge) {
+            // Track cache miss
+            MetricsService.incrementDbCacheMisses(
+                MetricsService.createTags(
+                    "reason" to if (!cacheInitialized) "not_initialized" else "expired"
+                )
+            )
+
+            MDC.put("event_type", if (!cacheInitialized) "cache_miss" else "cache_expired")
+            MDC.put("cache_age_ms", cacheAge.toString())
+            logger.debug("Cache ${if (!cacheInitialized) "not initialized" else "expired"}, refreshing")
             MDC.clear()
             return@withContext refreshCache()
         }
+
+        // Track cache hit
+        MetricsService.incrementDbCacheHits()
+
+        // Update cache size metric
+        MetricsService.updateDbCacheSize(userCache.size)
+
         MDC.put("event_type", "cache_hit")
         MDC.put("cache_size", userCache.size.toString())
+        MDC.put("cache_age_ms", cacheAge.toString())
         logger.debug("Returning users from cache")
         MDC.clear()
         userCache.values.toList()
@@ -116,12 +167,24 @@ class MongoClient(private val dispatcherProvider: DispatcherProvider) {
             val execTime = measureTimeMillis {
                 userList = usersCollection.find().toList()
             }
+
+            // Record database operation duration
+            MetricsService.recordDbOperationDuration(
+                execTime,
+                MetricsService.createTags("operation_type" to "fetch_all_users")
+            )
+
             MDC.put("event_type", "db_fetch_all_users_success")
             MDC.put("user_count", userList.size.toString())
             MDC.put("duration_ms", execTime.toString())
             logger.debug("Retrieved users from database")
             MDC.clear()
         } catch (e: Exception) {
+            // Track database operation error
+            MetricsService.incrementDbOperationErrors(
+                MetricsService.createTags("operation_type" to "fetch_all_users")
+            )
+
             MDC.put("event_type", "db_fetch_all_users_error")
             logger.error("Error fetching users from database", e)
             MDC.clear()
@@ -130,35 +193,60 @@ class MongoClient(private val dispatcherProvider: DispatcherProvider) {
         userList
     }
 
+    /**
+     * Refreshes the user cache from the database
+     * Optimized with cache timestamp tracking and better error handling
+     */
     suspend fun refreshCache(): List<User> = withContext(dispatcherProvider.database) {
         MDC.put("event_type", "cache_refresh_start")
         logger.debug("Starting cache refresh")
         MDC.clear()
+
         cacheMutex.withLock {
             val execTime = measureTimeMillis {
                 try {
                     val users = getAllUsersFromDB()
+
+                    // Update cache atomically
                     userCache.clear()
                     users.forEach { user ->
                         userCache[user.id] = user
                     }
+
+                    // Update cache metadata
                     cacheInitialized = true
+                    lastCacheRefreshTime = System.currentTimeMillis()
+
+                    // Update cache size metric
+                    MetricsService.updateDbCacheSize(userCache.size)
+
                     MDC.put("event_type", "cache_refresh_success")
                     MDC.put("cached_user_count", users.size.toString())
+                    MDC.put("cache_refresh_time", lastCacheRefreshTime.toString())
                     logger.debug("Cache refresh completed")
                     MDC.clear()
                     users
                 } catch (e: Exception) {
+                    // Track database operation error
+                    MetricsService.incrementDbOperationErrors(
+                        MetricsService.createTags("operation_type" to "cache_refresh")
+                    )
+
                     MDC.put("event_type", "cache_refresh_error")
                     logger.error("Failed to refresh cache", e)
                     MDC.clear()
                     throw e
                 }
             }
+
+            // Record cache refresh duration
+            MetricsService.recordDbCacheRefreshDuration(execTime)
+
             MDC.put("event_type", "cache_refresh_timing")
             MDC.put("duration_ms", execTime.toString())
             logger.debug("Cache refresh operation timing")
             MDC.clear()
+
             userCache.values.toList()
         }
     }

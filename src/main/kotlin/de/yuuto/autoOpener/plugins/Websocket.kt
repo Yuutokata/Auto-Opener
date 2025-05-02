@@ -34,7 +34,7 @@ fun Application.configureWebsockets(
         pingPeriod = null
         timeout = 90.seconds
         maxFrameSize = 65536
-        masking = false
+        masking = true // Enable masking for improved security
     }
 
     intercept(ApplicationCallPipeline.Plugins) {
@@ -123,14 +123,29 @@ fun Application.configureWebsockets(
                     } catch (closeEx: Exception) { /* Ignore close error */
                     }
                 } finally {
-                    if (!connectionEstablished) {
-                        MDC.put("event_type", "websocket_connection_failed")
+                    try {
+                        if (!connectionEstablished) {
+                            MDC.put("event_type", "websocket_connection_failed")
+                            userIdForLog?.let { MDC.put("user_id", it) }
+                            roleForLog?.let { MDC.put("role", it) }
+                            connectionId?.let { MDC.put("connection_id", it) }
+                            logger.warn("User WebSocket connection failed before manager handoff")
+
+                            // Ensure connection is properly closed if still active
+                            if (isActive && connectionId != null) {
+                                webSocketManager.cleanupConnection(
+                                    connectionId, "setup_failed" to "Connection setup failed before manager handoff"
+                                )
+                            }
+                        }
+                    } catch (e: Exception) {
+                        MDC.put("event_type", "websocket_cleanup_error")
                         userIdForLog?.let { MDC.put("user_id", it) }
-                        roleForLog?.let { MDC.put("role", it) }
                         connectionId?.let { MDC.put("connection_id", it) }
-                        logger.warn("User WebSocket connection failed before manager handoff")
+                        logger.error("Error during connection cleanup in finally block", e)
+                    } finally {
+                        MDC.clear()
                     }
-                    MDC.clear()
                 }
             }
         }
@@ -197,14 +212,29 @@ fun Application.configureWebsockets(
                     } catch (closeEx: Exception) { /* Ignore close error */
                     }
                 } finally {
-                    if (!connectionEstablished) {
-                        MDC.put("event_type", "websocket_connection_failed")
-                        roleForLog?.let { MDC.put("role", it) }
+                    try {
+                        if (!connectionEstablished) {
+                            MDC.put("event_type", "websocket_connection_failed")
+                            roleForLog?.let { MDC.put("role", it) }
+                            connectionId?.let { MDC.put("connection_id", it) }
+                            MDC.put("bot_token_prefix", botTokenIdentifier ?: "null")
+                            logger.warn("Bot WebSocket connection failed before manager handoff")
+
+                            // Ensure connection is properly closed if still active
+                            if (isActive && connectionId != null) {
+                                webSocketManager.cleanupConnection(
+                                    connectionId, "setup_failed" to "Bot connection setup failed before manager handoff"
+                                )
+                            }
+                        }
+                    } catch (e: Exception) {
+                        MDC.put("event_type", "websocket_cleanup_error")
                         connectionId?.let { MDC.put("connection_id", it) }
                         MDC.put("bot_token_prefix", botTokenIdentifier ?: "null")
-                        logger.warn("Bot WebSocket connection failed before manager handoff")
+                        logger.error("Error during bot connection cleanup in finally block", e)
+                    } finally {
+                        MDC.clear()
                     }
-                    MDC.clear()
                 }
             }
         }
@@ -244,22 +274,40 @@ private fun validateSession(jwtUserId: String?, pathUserId: String?, logger: Log
 
 private suspend fun cleanupExistingConnections(userId: String, webSocketManager: WebSocketManager) {
     val sessionsToClose = webSocketManager.getActiveSessionsForUser(userId)
-    if (sessionsToClose.isNotEmpty()) {
-        MDC.put("event_type", "stale_connection_cleanup_start")
-        MDC.put("user_id", userId)
-        MDC.put("stale_session_count", sessionsToClose.size.toString())
-        webSocketManager.logger.info("Cleaning up existing connections for user")
-        MDC.clear()
 
-        sessionsToClose.forEach { connectionId ->
-            webSocketManager.cleanupConnection(
-                connectionId, "stale_connection" to "New connection established for user $userId"
-            )
+    if (sessionsToClose.isNotEmpty()) {
+        // Get inactive sessions (those that haven't had activity in the last 5 minutes)
+        val currentTime = System.currentTimeMillis()
+        val inactiveThreshold = 5 * 60 * 1000 // 5 minutes in milliseconds
+        val inactiveSessions = sessionsToClose.filter { connectionId ->
+            val lastActivity = webSocketManager.getLastActivityTime(connectionId)
+            (currentTime - lastActivity) >= inactiveThreshold
+        }
+
+        if (inactiveSessions.isNotEmpty()) {
+            MDC.put("event_type", "stale_connection_cleanup_start")
+            MDC.put("user_id", userId)
+            MDC.put("stale_session_count", inactiveSessions.size.toString())
+            MDC.put("total_session_count", sessionsToClose.size.toString())
+            webSocketManager.logger.info("Cleaning up inactive connections for user")
+            MDC.clear()
+
+            inactiveSessions.forEach { connectionId ->
+                webSocketManager.cleanupConnection(
+                    connectionId, "inactive_connection" to "Inactive connection closed due to new connection for user $userId"
+                )
+            }
+        } else {
+            MDC.put("event_type", "stale_connection_check")
+            MDC.put("user_id", userId)
+            MDC.put("active_session_count", sessionsToClose.size.toString())
+            webSocketManager.logger.debug("No inactive connections found for user to cleanup")
+            MDC.clear()
         }
     } else {
         MDC.put("event_type", "stale_connection_check")
         MDC.put("user_id", userId)
-        MDC.put("stale_session_count", "0")
+        MDC.put("active_session_count", "0")
         webSocketManager.logger.debug("No existing connections found for user to cleanup")
         MDC.clear()
     }
@@ -270,4 +318,3 @@ private fun handleProtocolHeader(call: PipelineCall) {
         call.response.headers.append("Sec-WebSocket-Protocol", protocol)
     }
 }
-

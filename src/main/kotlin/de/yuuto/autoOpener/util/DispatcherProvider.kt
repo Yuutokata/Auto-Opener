@@ -11,15 +11,20 @@ class DispatcherProvider {
 
     // Network operations: Optimized for Redis pub/sub and WebSocket message delivery
     // Increased parallelism for high-volume message processing
-    val network: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(30)
+    // Reduced from 30 to 20 for better resource utilization while maintaining throughput
+    val network: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(20)
 
     // Database operations: Tuned for MongoDB connection pool size and transaction throughput
     // Matched to MongoDB driver's connection pool configuration
-    val database: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(10)
+    // Increased from 10 to 12 to better handle concurrent database operations
+    val database: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(12)
 
     // Processing operations: CPU-bound tasks like JWT validation and message serialization
     // Limited to physical core count for optimal CPU utilization
-    val processing: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(8)
+    // Using available processors to automatically adapt to the host environment
+    val processing: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(
+        Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
+    )
 
     // Monitoring operations: Health checks and metrics collection
     // Low priority to prevent interference with critical path operations
@@ -27,7 +32,8 @@ class DispatcherProvider {
 
     // WebSocket operations: Specialized for frame processing and connection management
     // Balanced between IO parallelism and WebSocket protocol requirements
-    val websocket: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(6)
+    // Increased from 6 to 8 to better handle concurrent WebSocket operations
+    val websocket: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(8)
 
     // Heartbeat dispatcher with strict QoS guarantees
     // Ensures timely ping/pong handling even under high load

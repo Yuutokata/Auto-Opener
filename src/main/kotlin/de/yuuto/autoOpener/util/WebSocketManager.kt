@@ -8,6 +8,7 @@ import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import de.yuuto.autoOpener.dataclass.WebsocketReceive
 import io.ktor.websocket.*
 import io.ktor.websocket.CloseReason.Codes.INTERNAL_ERROR
+import io.micrometer.core.instrument.Tags
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ClosedSendChannelException
@@ -29,8 +30,12 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     internal val connectionTimestamps = ConcurrentHashMap<String, Long>()
     internal val connectionMetrics = ConcurrentHashMap<String, ConnectionMetrics>()
     private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    // Optimize message deduplication cache with better expiration and initial capacity
     private val processedMessages: LoadingCache<String, Boolean> = Caffeine.newBuilder()
         .expireAfterWrite(1, TimeUnit.MINUTES)
+        .initialCapacity(1000)
+        .maximumSize(10000)
+        .recordStats()
         .build { _ -> true }
 
     private val userSessions = ConcurrentHashMap<String, MutableSet<String>>()
@@ -161,79 +166,187 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     private suspend fun handleBotMessage(connectionId: String, frame: Frame.Text, botId: String) =
         withContext(dispatcherProvider.websocket) {
             val text = frame.readText()
+
+            // Generate a message ID for deduplication
+            val messageId = "${botId}_${System.currentTimeMillis()}_${text.hashCode()}"
+
+            // Track message received
+            val tags = MetricsService.createTags(
+                "message_type" to "bot",
+                "bot_id" to botId
+            )
+            MetricsService.incrementMessagesReceived(tags)
+
+            // Check if this message was already processed (deduplication)
+            if (processedMessages.get(messageId)) {
+                // Track message deduplication
+                MetricsService.incrementMessageDeduplication(tags)
+
+                MDC.put("event_type", "message_duplicate")
+                MDC.put("connection_id", connectionId)
+                MDC.put("bot_id", botId)
+                MDC.put("message_id", messageId)
+                logger.debug("Duplicate message detected and skipped")
+                MDC.clear()
+                return@withContext
+            }
+
             MDC.put("event_type", "message_received_bot")
             MDC.put("connection_id", connectionId)
             MDC.put("bot_id", botId)
             MDC.put("message_preview", text.take(50))
+            MDC.put("message_id", messageId)
             logger.debug("Received bot message")
             MDC.clear()
 
             try {
+                // Parse message early to fail fast if invalid
                 val websocketReceive = Json.decodeFromString<WebsocketReceive>(text)
 
+                // Validate user ID format
                 if (!websocketReceive.userId.matches(Regex("^\\d{15,20}$"))) {
                     MDC.put("event_type", "message_validation_error")
                     MDC.put("connection_id", connectionId)
                     MDC.put("bot_id", botId)
                     MDC.put("invalid_user_id", websocketReceive.userId)
                     MDC.put("reason", "Invalid user ID format")
+                    MDC.put("message_id", messageId)
                     logger.error("Invalid user ID format in bot message")
                     MDC.clear()
                     sendBotResponse(connectionId, "error", "Invalid user ID format", websocketReceive.userId)
                     return@withContext
                 }
-                
+
                 val targetUserId = websocketReceive.userId
+
+                // Pre-encode the message once instead of for each recipient
+                val encodedMessage = Json.encodeToString(websocketReceive.message)
+
+                // Get active sessions efficiently
                 val activeSessions = getActiveSessionsForUser(targetUserId)
                 if (activeSessions.isEmpty()) {
+                    // Track message forward failure
+                    val failureTags = MetricsService.createTags(
+                        "reason" to "no_active_sessions",
+                        "bot_id" to botId,
+                        "user_id" to targetUserId
+                    )
+                    MetricsService.incrementMessageForwardFailures(failureTags)
+
                     MDC.put("event_type", "message_forward_failed")
                     MDC.put("connection_id", connectionId)
                     MDC.put("bot_id", botId)
                     MDC.put("user_id", targetUserId)
                     MDC.put("reason", "No active sessions found for user")
                     MDC.put("status", "session_not_found")
+                    MDC.put("message_id", messageId)
                     logger.warn("No active sessions found for user, cannot forward message")
                     MDC.clear()
                     sendBotResponse(connectionId, "warn", "No active sessions found for user", targetUserId)
                     return@withContext
                 }
-                
+
+                // Use a more efficient approach for tracking success
                 var successCount = 0
-                activeSessions.forEach { userConnectionId ->
-                    try {
-                        sendMessageToClient(
-                            userConnectionId, Json.encodeToString(websocketReceive.message), targetUserId
-                        )
+                val failedSessions = mutableListOf<String>()
+
+                // Measure message forwarding latency
+                val forwardStartTime = System.currentTimeMillis()
+
+                // Process all sessions in parallel for better performance
+                val results = activeSessions.map { userConnectionId ->
+                    async(dispatcherProvider.websocket) {
+                        try {
+                            sendMessageToClient(userConnectionId, encodedMessage, targetUserId)
+                            true to userConnectionId
+                        } catch (e: Exception) {
+                            // Track message forward failure
+                            val failureTags = MetricsService.createTags(
+                                "reason" to "send_error",
+                                "bot_id" to botId,
+                                "user_id" to targetUserId
+                            )
+                            MetricsService.incrementMessageForwardFailures(failureTags)
+
+                            MDC.put("event_type", "message_forward_failed")
+                            MDC.put("source_connection_id", connectionId)
+                            MDC.put("bot_id", botId)
+                            MDC.put("user_id", targetUserId)
+                            MDC.put("target_connection_id", userConnectionId)
+                            MDC.put("status", "failure")
+                            MDC.put("message_id", messageId)
+                            logger.error("Failed to forward message to user session", e)
+                            MDC.clear()
+                            false to userConnectionId
+                        }
+                    }
+                }.awaitAll()
+
+                // Record message forwarding latency
+                val forwardLatencyMs = System.currentTimeMillis() - forwardStartTime
+                val latencyTags = MetricsService.createTags(
+                    "bot_id" to botId,
+                    "user_id" to targetUserId
+                )
+                MetricsService.recordMessageForwardLatency(forwardLatencyMs, latencyTags)
+
+                // Process results
+                results.forEach { (success, userConnectionId) ->
+                    if (success) {
                         successCount++
+                        // Track URL forward (business metric)
+                        MetricsService.incrementUrlForwards(
+                            MetricsService.createTags(
+                                "bot_id" to botId,
+                                "user_id" to targetUserId
+                            )
+                        )
+
                         MDC.put("event_type", "message_forwarded_to_client")
                         MDC.put("source_connection_id", connectionId)
                         MDC.put("bot_id", botId)
                         MDC.put("user_id", targetUserId)
                         MDC.put("target_connection_id", userConnectionId)
                         MDC.put("status", "success")
+                        MDC.put("message_id", messageId)
                         logger.info("Message forwarded to user session")
                         MDC.clear()
-                    } catch (e: Exception) {
-                        MDC.put("event_type", "message_forward_failed")
-                        MDC.put("source_connection_id", connectionId)
-                        MDC.put("bot_id", botId)
-                        MDC.put("user_id", targetUserId)
-                        MDC.put("target_connection_id", userConnectionId)
-                        MDC.put("status", "failure")
-                        logger.error("Failed to forward message to user session", e)
-                        MDC.clear()
+                    } else {
+                        failedSessions.add(userConnectionId)
                     }
-                    updateActivityTimestamp(connectionId)
                 }
-                
+
+                // Update activity timestamp once after all processing
+                updateActivityTimestamp(connectionId)
+
+                // Mark message as processed
+                processedMessages.put(messageId, true)
+
+                // Calculate and track message delivery success rate
+                val totalSessions = activeSessions.size
+                val successRate = if (totalSessions > 0) (successCount * 100L) / totalSessions else 0L
+                MetricsService.updateMessageDeliverySuccessRate(successRate)
+
+                // Send appropriate response
                 if (successCount > 0) {
+                    val failureInfo = if (failedSessions.isNotEmpty()) 
+                        " (${failedSessions.size} sessions failed)" else ""
+
                     sendBotResponse(
                         connectionId, 
                         "success", 
-                        "Message delivered to $successCount/${activeSessions.size} active sessions", 
+                        "Message delivered to $successCount/${activeSessions.size} active sessions$failureInfo", 
                         targetUserId
                     )
                 } else {
+                    // Track complete delivery failure
+                    val failureTags = MetricsService.createTags(
+                        "reason" to "all_deliveries_failed",
+                        "bot_id" to botId,
+                        "user_id" to targetUserId
+                    )
+                    MetricsService.incrementMessageForwardFailures(failureTags)
+
                     sendBotResponse(
                         connectionId,
                         "error",
@@ -242,6 +355,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     )
                 }
             } catch (e: kotlinx.serialization.SerializationException) {
+                // Track message processing error
+                val errorTags = MetricsService.createTags(
+                    "error_type" to "serialization",
+                    "bot_id" to botId
+                )
+                MetricsService.incrementMessageProcessingErrors(errorTags)
+
                 MDC.put("event_type", "message_validation_error")
                 MDC.put("connection_id", connectionId)
                 MDC.put("bot_id", botId)
@@ -250,6 +370,14 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 MDC.clear()
                 sendBotResponse(connectionId, "error", "Invalid message format: ${e.message}")
             } catch (e: Exception) {
+                // Track message processing error
+                val errorTags = MetricsService.createTags(
+                    "error_type" to "unexpected",
+                    "bot_id" to botId
+                )
+                MetricsService.incrementMessageProcessingErrors(errorTags)
+                MetricsService.incrementApplicationErrors(errorTags)
+
                 MDC.put("event_type", "message_processing_error")
                 MDC.put("connection_id", connectionId)
                 MDC.put("bot_id", botId)
@@ -275,7 +403,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             MDC.clear()
             return
         }
-        
+
         val response = BotResponse(status, message, userId)
         try {
             session.outgoing.send(Frame.Text(Json.encodeToString(response)))
@@ -336,6 +464,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 userSessions.remove(userId)
             }
         }
+
+        // Track zombie user sessions
+        if (zombieUserSessions.isNotEmpty()) {
+            val tags = MetricsService.createTags("session_type" to "user")
+            MetricsService.incrementZombieSessionsDetected(tags)
+        }
+
         zombieUserSessions.forEach { (userId, sessionId) ->
             MDC.put("event_type", "session_integrity_warning")
             MDC.put("session_type", "user")
@@ -357,6 +492,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 botSessions.remove(botId)
             }
         }
+
+        // Track zombie bot sessions
+        if (zombieBotSessions.isNotEmpty()) {
+            val tags = MetricsService.createTags("session_type" to "bot")
+            MetricsService.incrementZombieSessionsDetected(tags)
+        }
+
         zombieBotSessions.forEach { (botId, sessionId) ->
             MDC.put("event_type", "session_integrity_warning")
             MDC.put("session_type", "bot")
@@ -376,6 +518,12 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             connectionTimestamps[connectionId] = System.currentTimeMillis()
             connectionMetrics.computeIfAbsent(connectionId) { ConnectionMetrics() }
         }
+
+        // Track connection in metrics
+        val connectionType = if (connectionId.startsWith("bot_")) "bot" else "user"
+        val tags = MetricsService.createTags("connection_type" to connectionType)
+        MetricsService.incrementConnectionCount(tags)
+
         if (connectionId.startsWith("bot_")) {
              storeBotSession(extractBotId(connectionId)!!, connectionId)
         } else {
@@ -395,6 +543,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             val isBotSession = botSessions.values.any { it.contains(connectionId) }
 
             if (!isUserSession && !isBotSession) {
+                // Track connection integrity errors
+                MetricsService.incrementConnectionIntegrityErrors()
+
                 MDC.put("event_type", "connection_integrity_error")
                 MDC.put("connection_id", connectionId)
                 MDC.put("reason", "Active connection has no corresponding user/bot session record")
@@ -509,6 +660,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         withContext(dispatcherProvider.websocket) {
             val session = activeConnections[connectionId]
             if (session == null) {
+                // Track message send failure
+                val failureTags = MetricsService.createTags(
+                    "reason" to "connection_not_found",
+                    "user_id" to userId
+                )
+                MetricsService.incrementMessageForwardFailures(failureTags)
+
                 MDC.put("event_type", "message_sent_client_failed")
                 MDC.put("connection_id", connectionId)
                 MDC.put("user_id", userId)
@@ -522,6 +680,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             try {
                 session.outgoing.send(Frame.Text(message))
                 updateActivityTimestamp(connectionId)
+
+                // Track message sent
+                val tags = MetricsService.createTags(
+                    "user_id" to userId
+                )
+                MetricsService.incrementMessagesSent(tags)
+
                 MDC.put("event_type", "message_sent_client")
                 MDC.put("connection_id", connectionId)
                 MDC.put("user_id", userId)
@@ -529,6 +694,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 logger.info("Successfully sent message to client")
                 MDC.clear()
             } catch (e: ClosedSendChannelException) {
+                // Track message send failure
+                val failureTags = MetricsService.createTags(
+                    "reason" to "channel_closed",
+                    "user_id" to userId
+                )
+                MetricsService.incrementMessageForwardFailures(failureTags)
+
                 MDC.put("event_type", "message_sent_client_failed")
                 MDC.put("connection_id", connectionId)
                 MDC.put("user_id", userId)
@@ -538,20 +710,37 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 MDC.clear()
                 throw e
             } catch (e: Exception) {
-                 MDC.put("event_type", "message_sent_client_failed")
-                 MDC.put("connection_id", connectionId)
-                 MDC.put("user_id", userId)
-                 MDC.put("reason", "Unexpected send exception")
-                 MDC.put("status", "error")
-                 logger.error("Unexpected error sending message to client", e)
-                 MDC.clear()
-                 throw e
+                // Track message send failure
+                val failureTags = MetricsService.createTags(
+                    "reason" to "unexpected_error",
+                    "user_id" to userId
+                )
+                MetricsService.incrementMessageForwardFailures(failureTags)
+                MetricsService.incrementApplicationErrors(failureTags)
+
+                MDC.put("event_type", "message_sent_client_failed")
+                MDC.put("connection_id", connectionId)
+                MDC.put("user_id", userId)
+                MDC.put("reason", "Unexpected send exception")
+                MDC.put("status", "error")
+                logger.error("Unexpected error sending message to client", e)
+                MDC.clear()
+                throw e
             }
         }
 
     internal fun updateActivityTimestamp(connectionId: String) {
         connectionTimestamps[connectionId] = System.currentTimeMillis()
         connectionMetrics[connectionId]?.updateLastActivity()
+    }
+
+    /**
+     * Gets the last activity timestamp for a connection
+     * @param connectionId The ID of the connection
+     * @return The timestamp of the last activity, or 0 if not found
+     */
+    fun getLastActivityTime(connectionId: String): Long {
+        return connectionTimestamps[connectionId] ?: 0L
     }
 
     internal fun extractUserId(connectionId: String): String? {
@@ -587,6 +776,19 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
             val userId = extractUserId(connectionId)
             val botId = extractBotId(connectionId)
+
+            // Track connection metrics
+            val connectionType = if (botId != null) "bot" else "user"
+            val statusTag = effectiveCloseStatus.first
+            val tags = MetricsService.createTags(
+                "connection_type" to connectionType,
+                "close_status" to statusTag
+            )
+
+            // Record connection duration
+            durationMs?.let { 
+                MetricsService.recordConnectionDuration(it, tags)
+            }
 
             if (userId != null) {
                 removeUserSession(userId, connectionId)
@@ -663,6 +865,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         val pingDeferred = CompletableDeferred<Unit>().also {
             pendingPings[pingId] = it
         }
+        val pingStartTime = System.currentTimeMillis()
 
         try {
             MDC.put("event_type", "keepalive_ping_sent")
@@ -674,7 +877,19 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
             withTimeoutOrNull(Config.getPongTimeout().seconds) {
                 pingDeferred.await()
+
+                // Calculate and record ping-pong latency
+                val latencyMs = System.currentTimeMillis() - pingStartTime
+                val connectionType = if (connectionId.startsWith("bot_")) "bot" else "user"
+                val tags = MetricsService.createTags("connection_type" to connectionType)
+                MetricsService.recordPingPongLatency(latencyMs, tags)
+
             } ?: run {
+                // Track ping timeout
+                val connectionType = if (connectionId.startsWith("bot_")) "bot" else "user"
+                val tags = MetricsService.createTags("connection_type" to connectionType)
+                MetricsService.incrementPingTimeouts(tags)
+
                 MDC.put("event_type", "keepalive_timeout")
                 MDC.put("connection_id", connectionId)
                 MDC.put("ping_id", pingId)
@@ -684,6 +899,14 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 closeAndCleanupConnection(connectionId, session, CloseReason.Codes.GOING_AWAY, "Ping timeout")
             }
         } catch (e: Exception) {
+            // Track ping failure
+            MetricsService.incrementConnectionErrors(
+                MetricsService.createTags(
+                    "error_type" to "ping_failed",
+                    "connection_type" to if (connectionId.startsWith("bot_")) "bot" else "user"
+                )
+            )
+
             MDC.put("event_type", "keepalive_ping_failed")
             MDC.put("connection_id", connectionId)
             MDC.put("ping_id", pingId)
@@ -696,14 +919,27 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     }
 
     private fun logConnectionStats() {
+        val activeConnectionsCount = activeConnections.size
+        val userSessionCount = userSessions.size
+        val botSessionCount = botSessions.size
+
+        // Update metrics
+        MetricsService.updateActiveConnections(
+            total = activeConnectionsCount,
+            users = userSessions.values.sumOf { it.size },
+            bots = botSessions.values.sumOf { it.size }
+        )
+        MetricsService.updateActiveUsers(userSessionCount)
+        MetricsService.updateActiveBots(botSessionCount)
+
+        // Log the stats
         MDC.put("event_type", "connection_stats")
-        MDC.put("active_connections", activeConnections.size.toString())
+        MDC.put("active_connections", activeConnectionsCount.toString())
         MDC.put("connection_metrics_size", connectionMetrics.size.toString())
         MDC.put("connection_timestamps_size", connectionTimestamps.size.toString())
-        MDC.put("user_session_count", userSessions.size.toString())
-        MDC.put("bot_session_count", botSessions.size.toString())
+        MDC.put("user_session_count", userSessionCount.toString())
+        MDC.put("bot_session_count", botSessionCount.toString())
         logger.info("Periodic connection statistics")
         MDC.clear()
     }
 }
-
