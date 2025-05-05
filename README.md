@@ -1,92 +1,245 @@
-
 # Auto-Opener
 
-**Auto-Opener** is a Kotlin-based program that automates opening web pages or running applications based on triggers received via a WebSocket connection. It uses Redis for caching and Ktor for building the WebSocket server.
+Auto-Opener is a WebSocket-based message relay system that enables real-time communication between bots and users. It provides a secure and efficient way for bots to send messages to users through persistent WebSocket connections.
 
 ## Features
 
--   **WebSocket Communication:** Listens for triggers on a specified WebSocket endpoint.
--   **Customizable Actions:** Configure the program to open specific URLs or execute applications upon receiving triggers.
--   **Redis Integration:** Utilizes Redis to store and manage configuration data.
--   **Token-Based Authentication:** Secures the WebSocket connection with token-based authentication.
--   **Easy Configuration:** Configure the program's behavior through a `config.json` file.
+- **Real-time Communication**: Maintains WebSocket connections for instant message delivery
+- **Bot-to-User Messaging**: Allows bots to send messages to specific users
+- **Connection Management**: Robust handling of WebSocket connections with health checks and monitoring
+- **Security**: JWT authentication and rate limiting to prevent abuse
+- **Scalability**: Configurable dispatcher settings for optimal performance
+- **Monitoring**: Comprehensive logging and metrics for system health
 
-## Prerequisites
+## Requirements
 
--   **Java Development Kit (JDK):** Version 17 or higher.
--   **Gradle:** Build automation tool.
--   **Redis Server:** An instance of Redis running and accessible to the program.
+- JDK 21 or higher
+- MongoDB
+- Gradle
 
-## Setup
+## Installation
 
-1.  **Clone the repository:**
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yuutokata/Auto-Opener.git
+   cd Auto-Opener
+   ```
 
-    ```bash
-    git clone https://github.com/yuutokata/Auto-Opener.git
-    ```
+2. Configure the application by editing `config.json` (see Configuration section below)
 
-2.  **Configure the application:**
+3. Build the application:
+   ```bash
+   ./gradlew build
+   ```
 
-    -   Open the `config.json` file and modify the following parameters:
-        -   `host`: The hostname or IP address where the server will run.
-        -   `port`: The port number for the server.
-        -   `redis`:
-            -   `host`: The hostname or IP address of your Redis server.
-            -   `port`: The port number of your Redis server.
-        -   `tokens`:
-            -   `bot`: The bot token for authentication.
-            -   `user`: The user token for authentication.
-        -   `jwt`:
-            -   `secret`: The secret key for JWT signing.
-            -   `issuer`: The issuer of the JWT.
-            -   `audience`: The audience of the JWT.
-
-3.  **Build the application:**
-    ```bash
-    ./gradlew build
-    ```
-
-4.  **Run the application:**
-
-    ```bash
-    java -jar build/libs/Auto-Opener-1.0-SNAPSHOT.jar
-    ```
-
-## API Endpoints
-
-### 1. WebSocket Endpoint: `/listen/{userId}`
-
-*   **Purpose:** Establishes a WebSocket connection for a specific user, listens for triggers, and performs actions based on those triggers.
-*   **Method:** WebSocket
-*   **Authentication:** Requires a valid JWT (JSON Web Token) for authentication.
-*   **Usage:**
-    1.  A client establishes a WebSocket connection to this route, including the `userId` in the path and a valid JWT.
-    2.  The server authenticates the connection using the JWT.
-    3.  Once authenticated, the client can send trigger messages as plain text strings.
-    4.  The server listens for these triggers and performs the corresponding actions defined in the `config.json` file (e.g., opening a URL or executing an application).
-
-### 2. Message Sending Endpoint: `/send_message`
-
-*   **Purpose:** Sends a message to a specific user via a Redis topic.
-*   **Method:** GET
-*   **Authentication:** Requires a bot token in the `Authorization` header for authentication.
-*   **Usage:**
-    1.  A client sends a GET request to this route, including the `user_id` and `message` as query parameters and the bot token in the `Authorization` header.
-    2.  The server authenticates the request using the bot token.
-    3.  If authenticated, the server publishes the message to the corresponding Redis topic for the specified user.
-    4.  The client receives a response indicating whether the message was sent successfully.
-
-### 3. Token Generation Endpoint: `/generateToken`
-
-*   **Purpose:** Generates a JWT for a user.
-*   **Method:** GET
-*   **Authentication:** Requires a user token in the `Authorization` header for authentication.
-*   **Usage:**
-    1.  A client sends a GET request to this route, including the user token in the `Authorization` header.
-    2.  The server authenticates the request using the user token.
-    3.  If authenticated, the server generates a JWT containing the user ID and sends it in the response.
-    4.  The client can then use this JWT to authenticate WebSocket connections to the `/listen/{userId}` route.
+4. Run the application:
+   ```bash
+   ./gradlew run
+   ```
 
 ## Configuration
 
-The `config.json` file allows you to customize the behavior of Auto-Opener. See the example `config.json` in the repository for details.
+The application is configured through the `config.json` file. Here are the key configuration options:
+
+```json
+{
+  "host": "0.0.0.0",
+  "port": 5064,
+  "mongodb": {
+    "uri": "mongodb://localhost:27017",
+    "db": "AutoOpener"
+  },
+  "tokens": {
+    "bot": [""]
+  },
+  "jwt": {
+    "secret": "",
+    "issuer": "auto-opener",
+    "audience": "chrome-extension"
+  },
+  "rateLimits": {
+    "token": {
+      "limit": 20,
+      "duration": 60
+    },
+    "websocket": {
+      "limit": 40,
+      "duration": 60
+    },
+    "service": {
+      "limit": 100,
+      "duration": 60
+    }
+  },
+  "healthCheckInterval": 5,
+  "pongTimeout": 25,
+  "getInactivityThreshold": 60,
+  "websocket": {
+    "timeout": 90,
+    "maxFrameSize": 65536,
+    "masking": false
+  },
+  "dispatchers": {
+    "networkParallelism": 30,
+    "databaseParallelism": 10,
+    "processingParallelism": 8,
+    "monitoringParallelism": 4,
+    "websocketParallelism": 6,
+    "heartbeatParallelism": 2,
+    "monitoringIntervalSeconds": 120
+  }
+}
+```
+
+### Configuration Options Explained
+
+| Option | Description |
+|--------|-------------|
+| `host` | Host to bind the server to |
+| `port` | Port to listen on |
+| `mongodb.uri` | MongoDB connection URI |
+| `mongodb.db` | Database name |
+| `tokens.bot` | Array of bot authentication tokens |
+| `jwt.secret` | JWT secret for token generation/validation |
+| `jwt.issuer` | JWT issuer |
+| `jwt.audience` | JWT audience (e.g., "chrome-extension") |
+| `rateLimits.token.limit` | Rate limit for token endpoints |
+| `rateLimits.token.duration` | Duration in seconds for token rate limiting |
+| `rateLimits.websocket.limit` | Rate limit for WebSocket connections |
+| `rateLimits.websocket.duration` | Duration in seconds for WebSocket rate limiting |
+| `rateLimits.service.limit` | Rate limit for service endpoints |
+| `rateLimits.service.duration` | Duration in seconds for service rate limiting |
+| `healthCheckInterval` | Interval for health checks in seconds |
+| `pongTimeout` | Timeout for ping/pong in seconds |
+| `getInactivityThreshold` | Inactivity threshold in seconds |
+| `websocket.timeout` | WebSocket timeout in seconds |
+| `websocket.maxFrameSize` | Maximum frame size in bytes |
+| `websocket.masking` | WebSocket frame masking |
+| `dispatchers.networkParallelism` | Network thread pool size |
+| `dispatchers.databaseParallelism` | Database thread pool size |
+| `dispatchers.processingParallelism` | Processing thread pool size |
+| `dispatchers.monitoringParallelism` | Monitoring thread pool size |
+| `dispatchers.websocketParallelism` | WebSocket thread pool size |
+| `dispatchers.heartbeatParallelism` | Heartbeat thread pool size |
+| `dispatchers.monitoringIntervalSeconds` | Monitoring interval in seconds |
+
+## Usage
+
+### Bot Integration
+
+Bots can connect to the WebSocket server and send messages to users. Here's a basic example:
+
+1. Authenticate the Bot by requesting the token route:
+   ```
+   POST /token
+   ```
+   Body:
+   ```json
+   {
+     "token": "your_bot_token_here",
+     "role": "service"
+   }
+    ```
+2. You will get this response:
+    ```json
+   {"token": "your_jwt_token"}
+   ```
+
+3. Connect to the WebSocket endpoint with the jwt token passed using the Sec-WebSocket-Protocol header or the Authorization header:
+   ```
+   GET /bot
+   ```
+
+4. Send a message to a user:
+   ```json
+   {
+     "userId": "user_id_here",
+     "message": {
+       "type": "notification",
+       "content": "Hello from the bot!"
+     }
+   }
+   ```
+
+5. Receive delivery status:
+   ```json
+   {
+     "status": "success",
+     "message": "Message delivered to 1/1 active sessions",
+     "userId": "user_id_here"
+   }
+   ```
+
+### User Integration
+
+Users can connect to receive messages from bots:
+
+1. Authenticate the User by requesting the token route:
+   ```
+   GET /token?userId={USER_ID}
+   ```
+   
+2. You will get this response:
+    ```json
+   {"token": "your_jwt_token"}
+   ```
+
+3. Connect to the WebSocket endpoint with a user JWT passed using the Sec-WebSocket-Protocol header or the Authorization header:
+   ```
+   GET /listen/{USER_ID}
+   ```
+   Header:
+   ```
+   Sec-WebSocket-Protocol: your_jwt_token
+   ```
+
+4. Maintain the connection to receive messages from bots in real-time
+
+## Security Considerations
+
+- Always use HTTPS in production
+- Keep your JWT secret secure
+- Regularly rotate bot tokens
+- Set appropriate rate limits to prevent abuse
+
+## Monitoring
+
+The application provides detailed logs with structured logging using MDC (Mapped Diagnostic Context) for better observability. It also supports metrics collection through Micrometer with Prometheus integration.
+
+### Loki Logging Integration
+
+Auto-Opener integrates with Grafana Loki for centralized log aggregation. The logs are sent to Loki in JSON format with proper labels for efficient querying.
+
+#### System Variables for Loki Configuration
+
+You can configure the Loki integration using the following environment variables:
+
+| Variable | Description | Default Value |
+|----------|-------------|---------------|
+| `LOKI_URL` | URL for the Loki server | http://b856d7c7-976f-40b5-bcf7-a25f6a2daeea:5001/loki/api/v1/push |
+| `APP_NAME` | Application name used in labels | - |
+| `ENVIRONMENT` | Environment name (production, staging, development) | development |
+| `HOSTNAME` | Host name for identifying the source | System hostname |
+| `LOG_LEVEL` | Logging level | INFO |
+
+**Note:** Logs are only sent to Loki when `ENVIRONMENT` is set to "production".
+
+#### Example Usage
+
+```bash
+# Run with custom Loki configuration
+export LOKI_URL="http://your-loki-server:3100/loki/api/v1/push"
+export APP_NAME="auto-opener"
+export ENVIRONMENT="production"
+export HOSTNAME="app-server-01"
+export LOG_LEVEL="INFO"
+./gradlew run
+```
+
+## License
+
+[MIT License](LICENSE)
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
