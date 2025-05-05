@@ -415,8 +415,13 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
     }
 
-    private suspend fun processIncomingMessages(connectionId: String, userId: String) {
+    private suspend fun processIncomingMessages(connectionId: String, idParam: String) {
         val session = activeConnections[connectionId] ?: return
+
+        // Determine if this is a bot connection and extract the appropriate ID
+        val isBotConnection = connectionId.startsWith("bot_")
+        val botId = if (isBotConnection) idParam else null
+        val userId = if (!isBotConnection) idParam else null
 
         for (frame in session.incoming) {
             when (frame) {
@@ -428,14 +433,22 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         pendingPings.invalidate(pingId)
                         MDC.put("event_type", "keepalive_pong")
                         MDC.put("connection_id", connectionId)
-                        MDC.put("user_id", userId)
+                        if (isBotConnection) {
+                            MDC.put("bot_id", botId)
+                        } else {
+                            MDC.put("user_id", userId)
+                        }
                         MDC.put("ping_id", pingId)
                         logger.info("Pong received for custom ping")
                         MDC.clear()
                     } ?: run {
                         MDC.put("event_type", "keepalive_pong")
                         MDC.put("connection_id", connectionId)
-                        MDC.put("user_id", userId)
+                        if (isBotConnection) {
+                            MDC.put("bot_id", botId)
+                        } else {
+                            MDC.put("user_id", userId)
+                        }
                         MDC.put("ping_id", "system")
                         logger.debug("System pong received")
                         MDC.clear()
@@ -447,7 +460,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     val pingId = String(frame.data)
                     MDC.put("event_type", "keepalive_ping")
                     MDC.put("connection_id", connectionId)
-                    MDC.put("user_id", userId)
+                    if (isBotConnection) {
+                        MDC.put("bot_id", botId)
+                    } else {
+                        MDC.put("user_id", userId)
+                    }
                     MDC.put("ping_id", pingId)
                     logger.info("Ping received")
                     MDC.clear()
@@ -456,7 +473,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     } catch (e: Exception) {
                         MDC.put("event_type", "keepalive_pong_failed")
                         MDC.put("connection_id", connectionId)
-                        MDC.put("user_id", userId)
+                        if (isBotConnection) {
+                            MDC.put("bot_id", botId)
+                        } else {
+                            MDC.put("user_id", userId)
+                        }
                         logger.warn("Failed to send Pong response", e)
                         MDC.clear()
                     }
@@ -464,9 +485,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
                 is Frame.Text -> {
                     updateActivityTimestamp(connectionId)
-                    if (connectionId.startsWith("bot_")) {
-                        handleBotMessage(connectionId, frame, userId)
-                    } else {
+                    if (isBotConnection && botId != null) {
+                        handleBotMessage(connectionId, frame, botId)
+                    } else if (userId != null) {
                         handleClientMessage(connectionId, frame, userId)
                     }
                 }
@@ -480,7 +501,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     }
                     MDC.put("event_type", "message_received_client")
                     MDC.put("connection_id", connectionId)
-                    MDC.put("user_id", userId)
+                    if (isBotConnection) {
+                        MDC.put("bot_id", botId)
+                    } else {
+                        MDC.put("user_id", userId)
+                    }
                     MDC.put("message_type", "binary")
                     MDC.put("message_preview", messagePreview)
                     logger.info("Received binary message")
@@ -492,7 +517,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     val (status, reasonText) = determineCloseStatus(reason)
                     MDC.put("event_type", "connection_close_frame_received")
                     MDC.put("connection_id", connectionId)
-                    MDC.put("user_id", userId)
+                    if (isBotConnection) {
+                        MDC.put("bot_id", botId)
+                    } else {
+                        MDC.put("user_id", userId)
+                    }
                     MDC.put("reason", reasonText)
                     MDC.put("status", status)
                     MDC.put("close_code", reason?.code?.toString() ?: "N/A")
@@ -663,9 +692,8 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         val inactivityMillis = currentTime - lastActive
                         val timeSinceLastPingMillis = currentTime - lastPing
                         val inactivityThreshold = Config.getInactivityThreshold() * 1000
-                        val maxPingIntervalMillis = 25 * 1000 // 30 seconds in milliseconds
+                        val maxPingIntervalMillis = 25 * 1000
 
-                        // Send ping if connection is inactive for too long or if it's been more than 30 seconds since the last ping
                         if (inactivityMillis > inactivityThreshold || timeSinceLastPingMillis > maxPingIntervalMillis) {
                             val reason =
                                 if (inactivityMillis > inactivityThreshold) "inactivity_threshold_exceeded" else "max_ping_interval_exceeded"
@@ -741,4 +769,3 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         MDC.clear()
     }
 }
-
