@@ -34,7 +34,7 @@ fun Application.configureWebsockets(
         pingPeriod = null
         timeout = 90.seconds
         maxFrameSize = 65536
-        masking = true // Enable masking for improved security
+        masking = false // Disable masking to fix "MASK must be clear" error
     }
 
     intercept(ApplicationCallPipeline.Plugins) {
