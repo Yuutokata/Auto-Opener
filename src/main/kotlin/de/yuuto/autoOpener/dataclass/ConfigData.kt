@@ -7,19 +7,31 @@ import kotlinx.serialization.Serializable
 data class ConfigData(
     val host: String,
     val port: Int,
-    val redis: Redis,
     val mongodb: MongoDB,
     val tokens: Tokens,
     val jwt: JWT,
-    val subscriptionConnectionPoolSize: Int,
-    val subscriptionConnectionMinimumIdleSize: Int,
-    val connectionPoolSize: Int,
     val healthCheckInterval: Int,
-    val maxRetryAttempts: Int,
     val pongTimeout: Long,
-    val subscriptionsPerConnection: Int,
     val getInactivityThreshold: Int,
-    val rateLimits: RateLimits
+    val rateLimits: RateLimits,
+    val websocket: WebSocketConfig = WebSocketConfig(),
+    val dispatchers: DispatcherConfig = DispatcherConfig()
+)
+
+@Serializable
+data class WebSocketConfig(
+    val timeout: Int = 90, val maxFrameSize: Long = 65536, val masking: Boolean = false
+)
+
+@Serializable
+data class DispatcherConfig(
+    val networkParallelism: Int = 30,
+    val databaseParallelism: Int = 10,
+    val processingParallelism: Int = 8,
+    val monitoringParallelism: Int = 4,
+    val websocketParallelism: Int = 6,
+    val heartbeatParallelism: Int = 2,
+    val monitoringIntervalSeconds: Int = 120
 )
 
 @Serializable
@@ -29,12 +41,7 @@ data class RateLimit(
 
 @Serializable
 data class RateLimits(
-    val token: RateLimit, val websocket: RateLimit
-)
-
-@Serializable
-data class Redis(
-    val host: String, val port: Int
+    val token: RateLimit, val websocket: RateLimit, val service: RateLimit
 )
 
 @Serializable
