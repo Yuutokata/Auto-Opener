@@ -11,27 +11,27 @@ class DispatcherProvider {
 
     // Network operations: Optimized for Redis pub/sub and WebSocket message delivery
     // Increased parallelism for high-volume message processing
-    val network: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(30)
+    val network: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(Config.getNetworkParallelism())
 
     // Database operations: Tuned for MongoDB connection pool size and transaction throughput
     // Matched to MongoDB driver's connection pool configuration
-    val database: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(10)
+    val database: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(Config.getDatabaseParallelism())
 
     // Processing operations: CPU-bound tasks like JWT validation and message serialization
     // Limited to physical core count for optimal CPU utilization
-    val processing: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(8)
+    val processing: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(Config.getProcessingParallelism())
 
     // Monitoring operations: Health checks and metrics collection
     // Low priority to prevent interference with critical path operations
-    val monitoring: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(4)
+    val monitoring: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(Config.getMonitoringParallelism())
 
     // WebSocket operations: Specialized for frame processing and connection management
     // Balanced between IO parallelism and WebSocket protocol requirements
-    val websocket: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(6)
+    val websocket: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(Config.getWebsocketParallelism())
 
     // Heartbeat dispatcher with strict QoS guarantees
     // Ensures timely ping/pong handling even under high load
-    val heartbeat: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(2)
+    val heartbeat: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(Config.getHeartbeatParallelism())
 
     private val scope = CoroutineScope(monitoring + supervisorJob)
 
@@ -75,7 +75,7 @@ class DispatcherProvider {
             while (isActive) {
                 logDispatcherStats("Network", network)
                 logDispatcherStats("WebSocket", websocket)
-                delay(120.seconds)
+                delay(Config.getMonitoringIntervalSeconds().seconds)
             }
         }
     }

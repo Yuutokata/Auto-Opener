@@ -10,6 +10,10 @@ version = "1.0"
 
 repositories {
     mavenCentral()
+    maven {
+        url = uri("https://packages.confluent.io/maven")
+        name = "confluence"
+    }
 }
 
 dependencies {
@@ -22,6 +26,7 @@ dependencies {
     implementation("io.ktor:ktor-serialization-jackson-jvm")
     implementation("io.ktor:ktor-server-netty-jvm")
     implementation("io.ktor:ktor-server-default-headers")
+    implementation("io.ktor:ktor-server-rate-limit")
 
     implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
@@ -43,6 +48,7 @@ dependencies {
 
     implementation("ch.qos.logback.contrib:logback-json-classic:0.1.5") // Or latest compatible version
     implementation("ch.qos.logback.contrib:logback-jackson:0.1.5")
+    implementation("io.github.flaxoos:ktor-server-rate-limiting:2.1.2")
 
 }
 

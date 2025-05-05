@@ -1,7 +1,6 @@
 package de.yuuto.autoOpener.util
 
-import de.yuuto.autoOpener.dataclass.ConfigData
-import de.yuuto.autoOpener.dataclass.RateLimits
+import de.yuuto.autoOpener.dataclass.*
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import java.nio.file.Path
@@ -23,23 +22,39 @@ object Config {
         }
     }
 
+    // Basic configuration
     fun getHost(): String = configData.host
     fun getPort(): Int = configData.port
-    fun getRedisHost(): String = configData.redis.host
-    fun getRedisPort(): Int = configData.redis.port
+
+    // MongoDB configuration
     fun getMongoDBUri(): String = configData.mongodb.uri
     fun getMongoDBDatabase(): String = configData.mongodb.db
+
+    // Connection configuration
     fun getHealthCheckInterval(): Int = configData.healthCheckInterval
-    fun getMaxRetryAttempts(): Int = configData.maxRetryAttempts
     fun getPongTimeout(): Long = configData.pongTimeout
     fun getInactivityThreshold(): Int = configData.getInactivityThreshold
-    fun getSubscriptionsPerConnection(): Int = configData.subscriptionsPerConnection
+
+    // Rate limits
     fun getRateLimits(): RateLimits = configData.rateLimits
+
+    // Authentication
     fun getBotToken(): List<String> = configData.tokens.bot
     fun getIssuer(): String = configData.jwt.issuer
     fun getAudience(): String = configData.jwt.audience
     fun getSecret(): String = configData.jwt.secret
-    fun getSubscriptionConnectionPoolSize(): Int = configData.subscriptionConnectionPoolSize
-    fun getSubscriptionConnectionMinimumIdleSize(): Int = configData.subscriptionConnectionMinimumIdleSize
-    fun getConnectionPoolSize(): Int = configData.connectionPoolSize
+
+    // WebSocket configuration
+    fun getWebSocketTimeout(): Int = configData.websocket.timeout
+    fun getWebSocketMaxFrameSize(): Long = configData.websocket.maxFrameSize
+    fun getWebSocketMasking(): Boolean = configData.websocket.masking
+
+    // Dispatcher configuration
+    fun getNetworkParallelism(): Int = configData.dispatchers.networkParallelism
+    fun getDatabaseParallelism(): Int = configData.dispatchers.databaseParallelism
+    fun getProcessingParallelism(): Int = configData.dispatchers.processingParallelism
+    fun getMonitoringParallelism(): Int = configData.dispatchers.monitoringParallelism
+    fun getWebsocketParallelism(): Int = configData.dispatchers.websocketParallelism
+    fun getHeartbeatParallelism(): Int = configData.dispatchers.heartbeatParallelism
+    fun getMonitoringIntervalSeconds(): Int = configData.dispatchers.monitoringIntervalSeconds
 }

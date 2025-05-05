@@ -1,13 +1,12 @@
 package de.yuuto.autoOpener.util
 
+import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.github.benmanes.caffeine.cache.LoadingCache
 import de.yuuto.autoOpener.dataclass.BotResponse
 import de.yuuto.autoOpener.dataclass.ConnectionMetrics
-import de.yuuto.autoOpener.dataclass.WebSocketMessage
 import de.yuuto.autoOpener.dataclass.WebsocketReceive
 import io.ktor.websocket.*
-import io.ktor.websocket.CloseReason.Codes.INTERNAL_ERROR
+import io.ktor.websocket.CloseReason.Codes.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ClosedSendChannelException
@@ -18,7 +17,6 @@ import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
@@ -28,10 +26,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     internal val activeConnections = ConcurrentHashMap<String, WebSocketSession>()
     internal val connectionTimestamps = ConcurrentHashMap<String, Long>()
     internal val connectionMetrics = ConcurrentHashMap<String, ConnectionMetrics>()
-    private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
-    private val processedMessages: LoadingCache<String, Boolean> = Caffeine.newBuilder()
-        .expireAfterWrite(1, TimeUnit.MINUTES)
-        .build { _ -> true }
+    private val pendingPings: Cache<String, CompletableDeferred<Unit>> =
+        Caffeine.newBuilder().expireAfterWrite(Config.getPongTimeout() + 10, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    private val lastPingTimestamps: Cache<String, Long> =
+        Caffeine.newBuilder().expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES).build()
 
     private val userSessions = ConcurrentHashMap<String, MutableSet<String>>()
     private val botSessions = ConcurrentHashMap<String, MutableSet<String>>()
@@ -40,12 +39,12 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         scope.launch {
             while (isActive) {
                 try {
-                     synchronized(activeConnections) {
-                         logConnectionStats()
-                         verifySessionIntegrity()
-                     }
-                     verifySessions()
-                     delay(60.seconds)
+                    synchronized(activeConnections) {
+                        logConnectionStats()
+                        verifySessionIntegrity()
+                    }
+                    verifySessions()
+                    delay(60.seconds)
                 } catch (e: CancellationException) {
                     logger.info("WebSocketManager init loop cancelled.")
                     break
@@ -115,7 +114,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             logger.error("Unexpected error during WebSocket handling", e)
             MDC.clear()
         } finally {
-            cleanupConnection(connectionId, determineCloseStatus(CloseReason(CloseReason.Codes.NORMAL, "Session closed")))
+            cleanupConnection(
+                connectionId, determineCloseStatus(CloseReason(CloseReason.Codes.NORMAL, "Session closed"))
+            )
         }
     }
 
@@ -143,18 +144,31 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             logger.error("Unexpected error during WebSocket handling (bot)", e)
             MDC.clear()
         } finally {
-            cleanupConnection(connectionId, determineCloseStatus(CloseReason(CloseReason.Codes.NORMAL, "Session closed")))
+            cleanupConnection(
+                connectionId, determineCloseStatus(CloseReason(CloseReason.Codes.NORMAL, "Session closed"))
+            )
         }
     }
 
     internal fun determineCloseStatus(reason: CloseReason?): Pair<String, String> {
         return when (reason?.code) {
-            CloseReason.Codes.NORMAL.code -> "graceful_disconnect" to (reason.message.takeIf { it.isNotBlank() } ?: "Client closed normally")
-            CloseReason.Codes.GOING_AWAY.code -> "graceful_disconnect" to (reason.message.takeIf { it.isNotBlank() } ?: "Client navigated away or server shutdown")
-            CloseReason.Codes.VIOLATED_POLICY.code -> "policy_violation" to (reason.message.takeIf { it.isNotBlank() } ?: "Policy violation")
-            CloseReason.Codes.CANNOT_ACCEPT.code -> "cannot_accept" to (reason.message.takeIf { it.isNotBlank() } ?: "Cannot accept data")
-            CloseReason.Codes.PROTOCOL_ERROR.code -> "protocol_error" to (reason.message.takeIf { it.isNotBlank() } ?: "Protocol error")
-            else -> "unknown_disconnect" to (reason?.message?.takeIf { it.isNotBlank() } ?: "Unknown or abnormal closure")
+            CloseReason.Codes.NORMAL.code -> "graceful_disconnect" to (reason.message.takeIf { it.isNotBlank() }
+                ?: "Client closed normally")
+
+            CloseReason.Codes.GOING_AWAY.code -> "graceful_disconnect" to (reason.message.takeIf { it.isNotBlank() }
+                ?: "Client navigated away or server shutdown")
+
+            CloseReason.Codes.VIOLATED_POLICY.code -> "policy_violation" to (reason.message.takeIf { it.isNotBlank() }
+                ?: "Policy violation")
+
+            CloseReason.Codes.CANNOT_ACCEPT.code -> "cannot_accept" to (reason.message.takeIf { it.isNotBlank() }
+                ?: "Cannot accept data")
+
+            CloseReason.Codes.PROTOCOL_ERROR.code -> "protocol_error" to (reason.message.takeIf { it.isNotBlank() }
+                ?: "Protocol error")
+
+            else -> "unknown_disconnect" to (reason?.message?.takeIf { it.isNotBlank() }
+                ?: "Unknown or abnormal closure")
         }
     }
 
@@ -182,7 +196,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     sendBotResponse(connectionId, "error", "Invalid user ID format", websocketReceive.userId)
                     return@withContext
                 }
-                
+
                 val targetUserId = websocketReceive.userId
                 val activeSessions = getActiveSessionsForUser(targetUserId)
                 if (activeSessions.isEmpty()) {
@@ -197,7 +211,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     sendBotResponse(connectionId, "warn", "No active sessions found for user", targetUserId)
                     return@withContext
                 }
-                
+
                 var successCount = 0
                 activeSessions.forEach { userConnectionId ->
                     try {
@@ -225,20 +239,17 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     }
                     updateActivityTimestamp(connectionId)
                 }
-                
+
                 if (successCount > 0) {
                     sendBotResponse(
-                        connectionId, 
-                        "success", 
-                        "Message delivered to $successCount/${activeSessions.size} active sessions", 
+                        connectionId,
+                        "success",
+                        "Message delivered to $successCount/${activeSessions.size} active sessions",
                         targetUserId
                     )
                 } else {
                     sendBotResponse(
-                        connectionId,
-                        "error",
-                        "Failed to deliver message to any active sessions",
-                        targetUserId
+                        connectionId, "error", "Failed to deliver message to any active sessions", targetUserId
                     )
                 }
             } catch (e: kotlinx.serialization.SerializationException) {
@@ -260,10 +271,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         }
 
     private suspend fun sendBotResponse(
-        connectionId: String, 
-        status: String, 
-        message: String, 
-        userId: String? = null
+        connectionId: String, status: String, message: String, userId: String? = null
     ) {
         val session = activeConnections[connectionId] ?: run {
             MDC.put("event_type", "bot_response_failed")
@@ -275,7 +283,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             MDC.clear()
             return
         }
-        
+
         val response = BotResponse(status, message, userId)
         try {
             session.outgoing.send(Frame.Text(Json.encodeToString(response)))
@@ -328,9 +336,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         val zombieUserSessions = mutableListOf<Pair<String, String>>()
         userSessions.forEach { (userId, sessions) ->
             sessions.removeIf { sessionId ->
-                 val isZombie = !activeConnections.containsKey(sessionId)
-                 if (isZombie) zombieUserSessions.add(userId to sessionId)
-                 isZombie
+                val isZombie = !activeConnections.containsKey(sessionId)
+                if (isZombie) zombieUserSessions.add(userId to sessionId)
+                isZombie
             }
             if (sessions.isEmpty()) {
                 userSessions.remove(userId)
@@ -348,11 +356,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
         val zombieBotSessions = mutableListOf<Pair<String, String>>()
         botSessions.forEach { (botId, sessions) ->
-             sessions.removeIf { sessionId ->
-                 val isZombie = !activeConnections.containsKey(sessionId)
-                 if (isZombie) zombieBotSessions.add(botId to sessionId)
-                 isZombie
-             }
+            sessions.removeIf { sessionId ->
+                val isZombie = !activeConnections.containsKey(sessionId)
+                if (isZombie) zombieBotSessions.add(botId to sessionId)
+                isZombie
+            }
             if (sessions.isEmpty()) {
                 botSessions.remove(botId)
             }
@@ -372,14 +380,16 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         connectionId: String, session: WebSocketSession, userId: String
     ) = withContext(dispatcherProvider.websocket) {
         synchronized(activeConnections) {
+            val currentTime = System.currentTimeMillis()
             activeConnections[connectionId] = session
-            connectionTimestamps[connectionId] = System.currentTimeMillis()
+            connectionTimestamps[connectionId] = currentTime
+            lastPingTimestamps.put(connectionId, currentTime) // Initialize last ping timestamp
             connectionMetrics.computeIfAbsent(connectionId) { ConnectionMetrics() }
         }
         if (connectionId.startsWith("bot_")) {
-             storeBotSession(extractBotId(connectionId)!!, connectionId)
+            storeBotSession(extractBotId(connectionId)!!, connectionId)
         } else {
-             storeUserSession(userId, connectionId)
+            storeUserSession(userId, connectionId)
         }
 
         MDC.put("event_type", "connection_established")
@@ -413,9 +423,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 is Frame.Pong -> {
                     updateActivityTimestamp(connectionId)
                     val pingId = String(frame.data)
-                    pendingPings[pingId]?.let { deferred ->
+                    pendingPings.getIfPresent(pingId)?.let { deferred ->
                         deferred.complete(Unit)
-                        pendingPings.remove(pingId)
+                        pendingPings.invalidate(pingId)
                         MDC.put("event_type", "keepalive_pong")
                         MDC.put("connection_id", connectionId)
                         MDC.put("user_id", userId)
@@ -423,12 +433,12 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                         logger.info("Pong received for custom ping")
                         MDC.clear()
                     } ?: run {
-                         MDC.put("event_type", "keepalive_pong")
-                         MDC.put("connection_id", connectionId)
-                         MDC.put("user_id", userId)
-                         MDC.put("ping_id", "system")
-                         logger.debug("System pong received")
-                         MDC.clear()
+                        MDC.put("event_type", "keepalive_pong")
+                        MDC.put("connection_id", connectionId)
+                        MDC.put("user_id", userId)
+                        MDC.put("ping_id", "system")
+                        logger.debug("System pong received")
+                        MDC.clear()
                     }
                 }
 
@@ -442,7 +452,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                     logger.info("Ping received")
                     MDC.clear()
                     try {
-                         session.outgoing.send(Frame.Pong(frame.data))
+                        session.outgoing.send(Frame.Pong(frame.data))
                     } catch (e: Exception) {
                         MDC.put("event_type", "keepalive_pong_failed")
                         MDC.put("connection_id", connectionId)
@@ -463,7 +473,11 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
 
                 is Frame.Binary -> {
                     updateActivityTimestamp(connectionId)
-                    val messagePreview = try { frame.readBytes().decodeToString().take(50) } catch (e: Exception) { "<binary data>" }
+                    val messagePreview = try {
+                        frame.readBytes().decodeToString().take(50)
+                    } catch (e: Exception) {
+                        "<binary data>"
+                    }
                     MDC.put("event_type", "message_received_client")
                     MDC.put("connection_id", connectionId)
                     MDC.put("user_id", userId)
@@ -538,14 +552,14 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
                 MDC.clear()
                 throw e
             } catch (e: Exception) {
-                 MDC.put("event_type", "message_sent_client_failed")
-                 MDC.put("connection_id", connectionId)
-                 MDC.put("user_id", userId)
-                 MDC.put("reason", "Unexpected send exception")
-                 MDC.put("status", "error")
-                 logger.error("Unexpected error sending message to client", e)
-                 MDC.clear()
-                 throw e
+                MDC.put("event_type", "message_sent_client_failed")
+                MDC.put("connection_id", connectionId)
+                MDC.put("user_id", userId)
+                MDC.put("reason", "Unexpected send exception")
+                MDC.put("status", "error")
+                logger.error("Unexpected error sending message to client", e)
+                MDC.clear()
+                throw e
             }
         }
 
@@ -555,59 +569,68 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     }
 
     internal fun extractUserId(connectionId: String): String? {
-        return connectionId.split("_").firstOrNull()?.takeIf { it.isNotBlank() && !it.equals("bot", ignoreCase = true) } ?: run {
-             if (!connectionId.startsWith("bot_")) {
-                 MDC.put("event_type", "connection_id_format_error")
-                 MDC.put("connection_id", connectionId)
-                 logger.error("Invalid connection ID format: Cannot extract User ID")
-                 MDC.clear()
-             }
-             null
-        }
+        return connectionId.split("_").firstOrNull()?.takeIf { it.isNotBlank() && !it.equals("bot", ignoreCase = true) }
+            ?: run {
+                if (!connectionId.startsWith("bot_")) {
+                    MDC.put("event_type", "connection_id_format_error")
+                    MDC.put("connection_id", connectionId)
+                    logger.error("Invalid connection ID format: Cannot extract User ID")
+                    MDC.clear()
+                }
+                null
+            }
     }
 
     internal fun extractBotId(connectionId: String): String? {
         val parts = connectionId.split("_")
         return if (parts.size >= 2 && parts[0].equals("bot", ignoreCase = true) && parts[1].isNotBlank()) {
-             parts[1]
+            parts[1]
         } else {
-             null
+            null
         }
     }
 
-    internal suspend fun cleanupConnection(connectionId: String, closeStatus: Pair<String, String>? = null) = withContext(dispatcherProvider.websocket) {
-        val effectiveCloseStatus = closeStatus ?: ("unknown_cleanup" to "Connection cleaned up due to internal trigger")
-        val startTime = connectionTimestamps[connectionId]
-        val durationMs = startTime?.let { System.currentTimeMillis() - it }
+    internal suspend fun cleanupConnection(connectionId: String, closeStatus: Pair<String, String>? = null) =
+        withContext(dispatcherProvider.websocket) {
+            val effectiveCloseStatus =
+                closeStatus ?: ("unknown_cleanup" to "Connection cleaned up due to internal trigger")
+            val startTime = connectionTimestamps[connectionId]
+            val durationMs = startTime?.let { System.currentTimeMillis() - it }
 
-        synchronized(activeConnections) {
-            val session = activeConnections.remove(connectionId)
-            connectionTimestamps.remove(connectionId)
-            connectionMetrics.remove(connectionId)
+            synchronized(activeConnections) {
+                val session = activeConnections.remove(connectionId)
+                connectionTimestamps.remove(connectionId)
+                connectionMetrics.remove(connectionId)
+                lastPingTimestamps.invalidate(connectionId)
 
-            val userId = extractUserId(connectionId)
-            val botId = extractBotId(connectionId)
+                val userId = extractUserId(connectionId)
+                val botId = extractBotId(connectionId)
 
-            if (userId != null) {
-                removeUserSession(userId, connectionId)
+                if (userId != null) {
+                    removeUserSession(userId, connectionId)
+                }
+                if (botId != null) {
+                    removeBotSession(botId, connectionId)
+                }
+
+                MDC.put("event_type", "connection_terminated")
+                MDC.put("connection_id", connectionId)
+                userId?.let { MDC.put("user_id", it) }
+                botId?.let { MDC.put("bot_id", it) }
+                MDC.put("reason", effectiveCloseStatus.second)
+                MDC.put("status", effectiveCloseStatus.first)
+                durationMs?.let { MDC.put("duration_ms", it.toString()) }
+                logger.info("Connection terminated and cleaned up")
+                MDC.clear()
             }
-            if (botId != null) {
-                removeBotSession(botId, connectionId)
-            }
-
-            MDC.put("event_type", "connection_terminated")
-            MDC.put("connection_id", connectionId)
-            userId?.let { MDC.put("user_id", it) }
-            botId?.let { MDC.put("bot_id", it) }
-            MDC.put("reason", effectiveCloseStatus.second)
-            MDC.put("status", effectiveCloseStatus.first)
-            durationMs?.let { MDC.put("duration_ms", it.toString()) }
-            logger.info("Connection terminated and cleaned up")
-            MDC.clear()
         }
-    }
 
-    internal suspend fun closeAndCleanupConnection(connectionId: String, session: WebSocketSession, statusCode: CloseReason.Codes = CloseReason.Codes.NORMAL, message: String = "Closing connection") {
+    internal suspend fun closeAndCleanupConnection(
+        connectionId: String,
+        session: WebSocketSession,
+        statusCode: CloseReason.Codes = CloseReason.Codes.NORMAL,
+        message: String = "Closing connection"
+    ) {
         val reason = CloseReason(statusCode, message)
         val closeStatus = determineCloseStatus(reason)
         try {
@@ -633,21 +656,30 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         scope.launch {
             while (isActive) {
                 try {
-                     activeConnections.forEach { (connectionId, session) ->
-                         val lastActive = connectionTimestamps[connectionId] ?: 0L
-                         val inactivityMillis = System.currentTimeMillis() - lastActive
-                         val threshold = Config.getInactivityThreshold() * 1000
+                    activeConnections.forEach { (connectionId, session) ->
+                        val currentTime = System.currentTimeMillis()
+                        val lastActive = connectionTimestamps[connectionId] ?: 0L
+                        val lastPing = lastPingTimestamps.getIfPresent(connectionId) ?: 0L
+                        val inactivityMillis = currentTime - lastActive
+                        val timeSinceLastPingMillis = currentTime - lastPing
+                        val inactivityThreshold = Config.getInactivityThreshold() * 1000
+                        val maxPingIntervalMillis = 25 * 1000 // 30 seconds in milliseconds
 
-                         if (inactivityMillis > threshold) {
-                             MDC.put("event_type", "connection_inactivity_detected")
-                             MDC.put("connection_id", connectionId)
-                             MDC.put("inactive_duration_ms", inactivityMillis.toString())
-                             MDC.put("threshold_ms", threshold.toString())
-                             logger.debug("Connection potentially inactive, sending health ping")
-                             MDC.clear()
-                             scope.launch { sendHealthPing(connectionId, session) }
-                         }
-                     }
+                        // Send ping if connection is inactive for too long or if it's been more than 30 seconds since the last ping
+                        if (inactivityMillis > inactivityThreshold || timeSinceLastPingMillis > maxPingIntervalMillis) {
+                            val reason =
+                                if (inactivityMillis > inactivityThreshold) "inactivity_threshold_exceeded" else "max_ping_interval_exceeded"
+
+                            MDC.put("event_type", "connection_ping_needed")
+                            MDC.put("connection_id", connectionId)
+                            MDC.put("inactive_duration_ms", inactivityMillis.toString())
+                            MDC.put("time_since_last_ping_ms", timeSinceLastPingMillis.toString())
+                            MDC.put("reason", reason)
+                            logger.debug("Sending health ping: $reason")
+                            MDC.clear()
+                            scope.launch { sendHealthPing(connectionId, session) }
+                        }
+                    }
                 } catch (e: Exception) {
                     MDC.put("event_type", "connection_monitor_error")
                     logger.error("Error during connection monitoring loop", e)
@@ -661,7 +693,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
     private suspend fun sendHealthPing(connectionId: String, session: WebSocketSession) {
         val pingId = "ping-${UUID.randomUUID()}"
         val pingDeferred = CompletableDeferred<Unit>().also {
-            pendingPings[pingId] = it
+            pendingPings.put(pingId, it)
         }
 
         try {
@@ -671,6 +703,9 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             logger.debug("Sending health ping")
             MDC.clear()
             session.send(Frame.Ping(pingId.toByteArray()))
+
+            // Record the timestamp when the ping is sent
+            lastPingTimestamps.put(connectionId, System.currentTimeMillis())
 
             withTimeoutOrNull(Config.getPongTimeout().seconds) {
                 pingDeferred.await()
@@ -691,7 +726,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             MDC.clear()
             closeAndCleanupConnection(connectionId, session, INTERNAL_ERROR, "Ping failed: ${e.message}")
         } finally {
-            pendingPings.remove(pingId)
+            pendingPings.invalidate(pingId)
         }
     }
 

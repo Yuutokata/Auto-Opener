@@ -13,7 +13,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
-import kotlin.time.Duration.Companion.seconds
 
 
 class DependencyProvider {
@@ -45,28 +44,38 @@ fun main() {
                 val connectionsToClose = dependencyProvider.webSocketManager.activeConnections.toList()
                 connectionsToClose.forEach { (connectionId, session) ->
                     launch(dependencyProvider.dispatcherProvider.websocket) { // Launch cleanup in appropriate context
-                         try {
+                        try {
                             MDC.put("event_type", "connection_close_request")
                             MDC.put("connection_id", connectionId)
                             MDC.put("reason", "Server shutting down")
                             logger.info("Requesting close for connection $connectionId")
                             MDC.clear()
                             session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Server shutting down"))
-                             dependencyProvider.webSocketManager.cleanupConnection(connectionId, dependencyProvider.webSocketManager.determineCloseStatus(CloseReason(CloseReason.Codes.GOING_AWAY, "Server shutting down")))
-                         } catch (e: Exception) {
-                             MDC.put("event_type", "connection_close_request_error")
-                             MDC.put("connection_id", connectionId)
-                             logger.error("Error closing connection $connectionId during shutdown", e)
-                             MDC.clear()
-                             try {
-                                 dependencyProvider.webSocketManager.cleanupConnection(connectionId, "shutdown_close_error" to "Error during session close: ${e.message}")
-                             } catch (cleanupError: Exception) {
-                                  MDC.put("event_type", "connection_cleanup_error")
-                                  MDC.put("connection_id", connectionId)
-                                  logger.error("Error cleaning up connection $connectionId after close failure", cleanupError)
-                                  MDC.clear()
-                             }
-                         }
+                            dependencyProvider.webSocketManager.cleanupConnection(
+                                connectionId, dependencyProvider.webSocketManager.determineCloseStatus(
+                                    CloseReason(
+                                        CloseReason.Codes.GOING_AWAY, "Server shutting down"
+                                    )
+                                )
+                            )
+                        } catch (e: Exception) {
+                            MDC.put("event_type", "connection_close_request_error")
+                            MDC.put("connection_id", connectionId)
+                            logger.error("Error closing connection $connectionId during shutdown", e)
+                            MDC.clear()
+                            try {
+                                dependencyProvider.webSocketManager.cleanupConnection(
+                                    connectionId, "shutdown_close_error" to "Error during session close: ${e.message}"
+                                )
+                            } catch (cleanupError: Exception) {
+                                MDC.put("event_type", "connection_cleanup_error")
+                                MDC.put("connection_id", connectionId)
+                                logger.error(
+                                    "Error cleaning up connection $connectionId after close failure", cleanupError
+                                )
+                                MDC.clear()
+                            }
+                        }
                     }
                 }
 
@@ -95,7 +104,7 @@ fun main() {
                 logger.error("Error during shutdown block", e)
                 MDC.clear()
             }
-        } // End runBlocking
+        }
     })
 
     embeddedServer(
@@ -104,14 +113,15 @@ fun main() {
 }
 
 fun Application.module() {
-    configureMonitoring()
     configureSerialization()
     configureSecurity()
+    configureRateLimit()
+    configureSecurityHeaders()
+    configureMonitoring()
     configureWebsockets(
         dependencyProvider.dispatcherProvider, dependencyProvider.webSocketManager
     )
     configureRouting(
         dependencyProvider.dispatcherProvider, dependencyProvider.mongoClient, dependencyProvider.webSocketManager
     )
-    configureSecurityHeaders()
 }
