@@ -92,11 +92,6 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
         MDC.clear()
     }
 
-    // New: Get active sessions for a bot
-    fun getActiveSessionsForBot(botId: String): List<String> {
-        return botSessions[botId]?.toList() ?: emptyList()
-    }
-
     suspend fun handleSession(session: WebSocketSession, userId: String, connectionId: String) {
         try {
             registerConnection(connectionId, session, userId)
@@ -873,7 +868,7 @@ class WebSocketManager(private val dispatcherProvider: DispatcherProvider) {
             MDC.put("ping_id", pingId)
             logger.debug("Sending health ping")
             MDC.clear()
-            session.send(Frame.Ping(pingId.toByteArray()))
+            session.outgoing.send(Frame.Ping(pingId.toByteArray()))
 
             withTimeoutOrNull(Config.getPongTimeout().seconds) {
                 pingDeferred.await()
