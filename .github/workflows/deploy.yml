@@ -73,16 +73,16 @@ jobs:
         with:
           # The Panel URL of your Pterodactyl instance (e.g., https://panel.example.com).
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_PANEL_URL).
-          # panel_url: ${{ secrets.PTERODACTYL_PANEL_URL }} # Uncomment and configure if your action version requires it.
+          panel_url: ${{ secrets.PANEL_HOST }} # Uncomment and configure if your action version requires it.
 
           # The ID of your Pterodactyl server.
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_SERVER_ID).
-          server_id: ${{ secrets.PTERODACTYL_SERVER_ID }}
+          server_id: ${{ secrets.SERVER_ID }}
 
           # Your Pterodactyl panel API key (Client API Key).
           # This should be configured as a secret for security (e.g., PTERODACTYL_API_KEY).
           # Ensure the API key has permissions to access and modify files for the specified server.
-          api_key: ${{ secrets.PTERODACTYL_API_KEY }}
+          api_key: ${{ secrets.API_KEY }}
 
           # Source files to be uploaded (relative to the repository root).
           # Specifies the 'lib' and 'bin' directories as the source for files to upload.
