@@ -46,6 +46,14 @@ jobs:
       - name: Assemble Distribution
         run: ./gradlew assembleDist
 
+      - name: List lib directory
+        run: ls -l ./lib
+
+      # Step 6: List bin directory
+      # Lists the contents of the bin directory to confirm that the build was successful
+      - name: List bin directory
+        run: ls -l ./bin
+
   # Job 2: Upload files to Pterodactyl server
   upload:
     # Specifies that the 'upload' job requires the 'build' job to complete successfully before it can start.
