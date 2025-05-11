@@ -61,7 +61,7 @@ jobs:
       # so your workflow can access its contents.
       - name: Checkout code
         uses: actions/checkout@v4 # Using v4 for the latest features and security updates.
-    
+
       # Step 2: Upload files to Pterodactyl server
       # This action utilizes the 'pterodactyl/upload-files' community action
       # to transfer files from the repository to the specified Pterodactyl server.
@@ -69,20 +69,20 @@ jobs:
       # for production workflows, it's often recommended to pin actions to a specific version tag
       # (e.g., pterodactyl/upload-files@v1.0.0) or a commit SHA to ensure stability and prevent unexpected breaking changes.
       - name: Upload files to Pterodactyl
-        uses: pterodactyl/upload-files@latest
+        uses: rexlmanu/pterodactyl-upload-action@v2.1
         with:
           # The Panel URL of your Pterodactyl instance (e.g., https://panel.example.com).
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_PANEL_URL).
-          panel_url: ${{ secrets.PANEL_HOST }} # Uncomment and configure if your action version requires it.
+          panel-host: ${{ secrets.PANEL_HOST }} # Uncomment and configure if your action version requires it.
 
           # The ID of your Pterodactyl server.
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_SERVER_ID).
-          server_id: ${{ secrets.SERVER_ID }}
+          server-id: ${{ secrets.SERVER_ID }}
 
           # Your Pterodactyl panel API key (Client API Key).
           # This should be configured as a secret for security (e.g., PTERODACTYL_API_KEY).
           # Ensure the API key has permissions to access and modify files for the specified server.
-          api_key: ${{ secrets.API_KEY }}
+          api-key: ${{ secrets.API_KEY }}
 
           # Source files to be uploaded (relative to the repository root).
           # Specifies the 'lib' and 'bin' directories as the source for files to upload.
@@ -93,13 +93,3 @@ jobs:
           # The target directory on the Pterodactyl server where the files will be uploaded.
           # './' indicates the root directory of the server.
           target: ./
-
-          # Files or patterns to exclude from the upload.
-          # Each file or pattern should be on a new line.
-          # This uses a YAML multi-line string for readability and easy addition of more exclusions.
-          exclude: |
-            config.json
-            # Add other files or patterns to exclude here, for example:
-            # .gitignore
-            # *.log
-            # temp/
