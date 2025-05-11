@@ -42,13 +42,45 @@ jobs:
 
       # Step 4: Build the project with Gradle
       # Executes the 'assembleDist' task using the Gradle Wrapper.
-      # This task builds the distribution artifacts (lib and bin folders).
+      # This task builds the distribution artifacts.
       - name: Assemble Distribution
         run: ./gradlew assembleDist
 
-      - name: List lib directory
-        run: ls
+      # Step 5: Find distribution file
+      # Finds the distribution file in the build/distributions directory.
+      - name: Find distribution file
+        id: find_dist
+        run: |
+          cd ./build/distributions
+          DIST_FILE=$(ls *.tar)
+          echo "dist_file=$DIST_FILE" >> $GITHUB_OUTPUT
+          echo "dist_path=$(pwd)" >> $GITHUB_OUTPUT
 
+      # Step 6: Unpack distribution file
+      # Unpacks the distribution file.
+      - name: Unpack distribution file
+        run: |
+          cd ${{ steps.find_dist.outputs.dist_path }}
+          tar -xf ${{ steps.find_dist.outputs.dist_file }}
+
+      # Step 7: Set directory for lib and bin
+      # Set the directory where lib and bin folders are located
+      - name: Set directory for lib and bin
+        id: set_dir
+        run: |
+          cd ${{ steps.find_dist.outputs.dist_path }}
+          EXTRACTED_FOLDER=$(ls -d */ | head -n 1)
+          echo "extracted_folder=$EXTRACTED_FOLDER" >> $GITHUB_OUTPUT
+
+      # Step 8: List lib directory
+      # Lists the contents of the lib directory to confirm that the build was successful.
+      - name: List lib directory
+        run: ls -l ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}lib
+
+      # Step 9: List bin directory
+      # Lists the contents of the bin directory to confirm that the build was successful.
+      - name: List bin directory
+        run: ls -l ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}bin
 
   # Job 2: Upload files to Pterodactyl server
   upload:
@@ -65,7 +97,7 @@ jobs:
       # so your workflow can access its contents.
       - name: Checkout code
         uses: actions/checkout@v4 # Using v4 for the latest features and security updates.
-
+      
       # Step 2: Upload files to Pterodactyl server
       # This action utilizes the 'pterodactyl/upload-files' community action
       # to transfer files from the repository to the specified Pterodactyl server.
@@ -73,26 +105,26 @@ jobs:
       # for production workflows, it's often recommended to pin actions to a specific version tag
       # (e.g., pterodactyl/upload-files@v1.0.0) or a commit SHA to ensure stability and prevent unexpected breaking changes.
       - name: Upload files to Pterodactyl
-        uses: rexlmanu/pterodactyl-upload-action@v2.1
+        uses: pterodactyl/upload-files@latest
         with:
           # The Panel URL of your Pterodactyl instance (e.g., https://panel.example.com).
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_PANEL_URL).
-          panel-host: ${{ secrets.PANEL_HOST }} # Uncomment and configure if your action version requires it.
+          # panel_url: ${{ secrets.PTERODACTYL_PANEL_URL }} # Uncomment and configure if your action version requires it.
 
           # The ID of your Pterodactyl server.
           # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_SERVER_ID).
-          server-id: ${{ secrets.SERVER_ID }}
+          server_id: ${{ secrets.PTERODACTYL_SERVER_ID }}
 
           # Your Pterodactyl panel API key (Client API Key).
           # This should be configured as a secret for security (e.g., PTERODACTYL_API_KEY).
           # Ensure the API key has permissions to access and modify files for the specified server.
-          api-key: ${{ secrets.API_KEY }}
+          api_key: ${{ secrets.PTERODACTYL_API_KEY }}
 
           # Source files to be uploaded (relative to the repository root).
           # Specifies the 'lib' and 'bin' directories as the source for files to upload.
           sources: |
-            lib
-            bin
+            ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}lib
+            ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}bin
 
           # The target directory on the Pterodactyl server where the files will be uploaded.
           # './' indicates the root directory of the server.
