@@ -82,6 +82,18 @@ jobs:
       - name: List bin directory
         run: ls -l ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}bin
 
+      # Step 10: Upload distribution artifact (NEW STEP)
+      # This step uploads the contents of the extracted distribution folder,
+      # which includes the lib and bin directories.
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4 # Using v4 for the latest features
+        with:
+          name: app-distribution # Name of the artifact
+          path: ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}
+          # This path should point to the directory containing your lib and bin folders.
+          # It will upload the contents of this directory.
+          if-no-files-found: error # Optional: causes the workflow to fail if no files are found
+
   # Job 2: Upload files to Pterodactyl server
   upload:
     # Specifies that the 'upload' job requires the 'build' job to complete successfully before it can start.
@@ -98,34 +110,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4 # Using v4 for the latest features and security updates.
 
-      # Step 2: Upload files to Pterodactyl server
-      # This action utilizes the 'pterodactyl/upload-files' community action
-      # to transfer files from the repository to the specified Pterodactyl server.
-      # Note: While '@latest' is used here as per potential user preference for always using the newest version,
-      # for production workflows, it's often recommended to pin actions to a specific version tag
-      # (e.g., pterodactyl/upload-files@v1.0.0) or a commit SHA to ensure stability and prevent unexpected breaking changes.
+ # Step 2: Download build artifacts (NEW STEP)
+      # Downloads the artifact uploaded by the 'build' job.
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4 # Using v4 for the latest features
+        with:
+          name: app-distribution # Must match the name used in upload-artifact
+          path: ./pterodactyl-files # Destination path for downloaded artifact
+          # The artifact's contents (lib, bin folders) will be placed inside ./pterodactyl-files
+
+      # Step 3: Upload files to Pterodactyl server (MODIFIED STEP)
+      # This action utilizes the 'rexlManu/pterodactyl-upload-action'
+      # to transfer files to the specified Pterodactyl server.
       - name: Upload files to Pterodactyl
         uses: rexlManu/pterodactyl-upload-action@v2.5
         with:
-          # The Panel URL of your Pterodactyl instance (e.g., https://panel.example.com).
-          # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_PANEL_URL).
-          panel-host: ${{ secrets.PANEL_HOST }} # Uncomment and configure if your action version requires it.
-
-          # The ID of your Pterodactyl server.
-          # This should be configured as a secret in your GitHub repository settings (e.g., PTERODACTYL_SERVER_ID).
+          panel-host: ${{ secrets.PANEL_HOST }}
           server-id: ${{ secrets.SERVER_ID }}
-
-          # Your Pterodactyl panel API key (Client API Key).
-          # This should be configured as a secret for security (e.g., PTERODACTYL_API_KEY).
-          # Ensure the API key has permissions to access and modify files for the specified server.
           api-key: ${{ secrets.API_KEY }}
-
-          # Source files to be uploaded (relative to the repository root).
-          # Specifies the 'lib' and 'bin' directories as the source for files to upload.
+          # MODIFIED: Source files now point to the downloaded artifacts
           sources: |
-            ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}lib
-            ./build/distributions/${{ steps.set_dir.outputs.extracted_folder }}bin
-
-          # The target directory on the Pterodactyl server where the files will be uploaded.
-          # './' indicates the root directory of the server.
-          target: ./
+            ./pterodactyl-files/lib
+            ./pterodactyl-files/bin
+          target: ./ # Target directory on Pterodactyl server
