@@ -51,24 +51,4 @@ object Config {
     private fun getenvOrDotenv(key: String, default: String): String {
         return System.getenv(key) ?: dotenv[key] ?: default
     }
-
-    // Authentication
-    fun getBotToken(): List<String> = configData.tokens.bot
-    fun getIssuer(): String = configData.jwt.issuer
-    fun getAudience(): String = configData.jwt.audience
-    fun getSecret(): String = configData.jwt.secret
-
-    // WebSocket configuration
-    fun getWebSocketTimeout(): Int = configData.websocket.timeout
-    fun getWebSocketMaxFrameSize(): Long = configData.websocket.maxFrameSize
-    fun getWebSocketMasking(): Boolean = configData.websocket.masking
-
-    // Dispatcher configuration
-    fun getNetworkParallelism(): Int = configData.dispatchers.networkParallelism
-    fun getDatabaseParallelism(): Int = configData.dispatchers.databaseParallelism
-    fun getProcessingParallelism(): Int = configData.dispatchers.processingParallelism
-    fun getMonitoringParallelism(): Int = configData.dispatchers.monitoringParallelism
-    fun getWebsocketParallelism(): Int = configData.dispatchers.websocketParallelism
-    fun getHeartbeatParallelism(): Int = configData.dispatchers.heartbeatParallelism
-    fun getMonitoringIntervalSeconds(): Int = configData.dispatchers.monitoringIntervalSeconds
 }
