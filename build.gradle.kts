@@ -46,7 +46,7 @@ dependencies {
     implementation("com.github.loki4j:loki-logback-appender:1.5.1")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.15.2")
 
-    implementation("ch.qos.logback.contrib:logback-json-classic:0.1.5") // Or latest compatible version
+    implementation("ch.qos.logback.contrib:logback-json-classic:0.1.5")
     implementation("ch.qos.logback.contrib:logback-jackson:0.1.5")
     implementation("io.github.flaxoos:ktor-server-rate-limiting:2.1.2")
 
