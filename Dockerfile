@@ -1,18 +1,37 @@
-# Dockerfile für Auto-Opener
+# Verwende OpenJDK 21 als Base Image
+FROM openjdk:21-jdk-slim
 
-# Build-Stage mit passender JDK-Version (Kotlin JVM 21)
-FROM gradle:8.5-jdk21 AS build
+# Installiere notwendige Pakete
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setze Arbeitsverzeichnis
 WORKDIR /app
-COPY . .
-RUN gradle build --no-daemon
 
-# Runtime-Stage mit passender JDK-Version
-FROM eclipse-temurin:21-jre
-WORKDIR /app
-COPY --from=build /app/build/libs/*.jar app.jar
+# Kopiere Gradle Wrapper und Build-Dateien
+COPY gradlew .
+COPY gradlew.bat .
+COPY gradle ./gradle
+COPY build.gradle.kts .
+COPY settings.gradle.kts .
+COPY gradle.properties .
 
-# .env ist optional, ENV-Variablen können auch direkt gesetzt werden
+# Mache Gradle Wrapper ausführbar
+RUN chmod +x ./gradlew
+
+# Kopiere Quellcode
+COPY src ./src
+
+# Kopiere resources
+COPY src/main/resources ./src/main/resources
+
+# Baue die Anwendung
+RUN ./gradlew build --no-daemon
+
+# Erstelle das JAR
+RUN ./gradlew installDist --no-daemon
+# Starte die Anwendung
+
 EXPOSE 8080
-
-# Starte die App, .env wird von der App automatisch geladen falls vorhanden
-CMD ["java", "-jar", "app.jar"]
+CMD ["./gradlew", "run", "--no-daemon"]
