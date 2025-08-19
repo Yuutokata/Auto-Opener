@@ -2,40 +2,40 @@
 
 Auto-Opener is a WebSocket-based message relay system that enables real-time communication between bots and users. It provides a secure and efficient way for bots to send messages to users through persistent WebSocket connections.
 
-## Features
 
-- **Real-time Communication**: Maintains WebSocket connections for instant message delivery
-- **Bot-to-User Messaging**: Allows bots to send messages to specific users
-- **Connection Management**: Robust handling of WebSocket connections with health checks and monitoring
-- **Security**: JWT authentication and rate limiting to prevent abuse
-- **Scalability**: Configurable dispatcher settings for optimal performance
-- **Monitoring**: Comprehensive logging and metrics for system health
+# Auto-Opener
 
-## Requirements
+## Konfiguration
 
-- JDK 21 or higher
-- MongoDB
-- Gradle
+Die Konfiguration erfolgt jetzt ausschließlich über Umgebungsvariablen oder eine `.env`-Datei. Die Datei `config.json` wird nicht mehr benötigt.
 
-## Installation
+Beispiel für eine `.env`-Datei:
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yuutokata/Auto-Opener.git
-   cd Auto-Opener
-   ```
+```
+MONGO_URI=mongodb://localhost:27017
+JWT_SECRET=dein_geheimer_schluessel
+SERVER_PORT=8080
+# ...weitere Variablen siehe .env.example
+```
 
-2. Configure the application by editing `config.json` (see Configuration section below)
+## Starten
 
-3. Build the application:
-   ```bash
-   ./gradlew build
-   ```
+```bash
+./gradlew run
+```
 
-4. Run the application:
-   ```bash
-   ./gradlew run
-   ```
+## Docker
+
+Um das Projekt mit Docker zu starten:
+
+```bash
+docker build -t auto-opener .
+docker run --env-file .env -p 8080:8080 auto-opener
+```
+
+## Beispiel für Umgebungsvariablen
+
+Siehe `.env.example` für alle verfügbaren Variablen.
 
 ## Configuration
 
