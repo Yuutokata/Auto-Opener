@@ -1,15 +1,9 @@
-# Verwende OpenJDK 21 als Base Image
 FROM openjdk:21-jdk-slim
 
-# Installiere notwendige Pakete
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Setze Arbeitsverzeichnis
 WORKDIR /app
 
-# Kopiere Gradle Wrapper und Build-Dateien
 COPY gradlew .
 COPY gradlew.bat .
 COPY gradle ./gradle
@@ -17,21 +11,28 @@ COPY build.gradle.kts .
 COPY settings.gradle.kts .
 COPY gradle.properties .
 
-# Mache Gradle Wrapper ausführbar
 RUN chmod +x ./gradlew
 
-# Kopiere Quellcode
 COPY src ./src
-
-# Kopiere resources
 COPY src/main/resources ./src/main/resources
 
-# Baue die Anwendung
 RUN ./gradlew build --no-daemon
-
-# Erstelle das JAR
 RUN ./gradlew installDist --no-daemon
-# Starte die Anwendung
 
 EXPOSE 8080
+
+LABEL "traefik.enable"="true" \
+      "traefik.http.routers.myapp.rule"="Host(`yourdomain.com`)" \
+      "traefik.http.routers.myapp.entrypoints"="websecure" \
+      "traefik.http.routers.myapp.tls"="true" \
+      "traefik.http.services.myapp.loadbalancer.server.port"="8080" \
+      "traefik.http.middlewares.myapp-websocket-headers.headers.customRequestHeaders.Sec-WebSocket-Protocol"="{header.Sec-WebSocket-Protocol}" \
+      "traefik.http.middlewares.myapp-websocket-headers.headers.customRequestHeaders.Sec-WebSocket-Key"="{header.Sec-WebSocket-Key}" \
+      "traefik.http.middlewares.myapp-websocket-headers.headers.customRequestHeaders.Sec-WebSocket-Version"="{header.Sec-WebSocket-Version}" \
+      "traefik.http.middlewares.myapp-websocket-headers.headers.customRequestHeaders.Sec-WebSocket-Extensions"="{header.Sec-WebSocket-Extensions}" \
+      "traefik.http.routers.myapp.middlewares"="myapp-websocket-headers@docker" \
+      "traefik.http.services.myapp.loadbalancer.server.scheme"="http" \
+      "traefik.http.services.myapp.loadbalancer.sticky.cookie=true" \
+      "traefik.http.services.myapp.loadbalancer.passHostHeader=true"
+
 CMD ["./gradlew", "run", "--no-daemon"]
