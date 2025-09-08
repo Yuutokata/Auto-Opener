@@ -69,3 +69,9 @@ application {
     mainClass.set("de.yuuto.autoOpener.AutoOpenerKt")
 
 }
+
+tasks.jar {
+    manifest {
+        attributes["Main-Class"] = "de.yuuto.autoOpener.AutoOpenerKt"
+    }
+}
