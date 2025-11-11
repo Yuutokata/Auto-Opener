@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk-slim
+FROM amazoncorretto:21
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
