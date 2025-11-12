@@ -1,5 +1,7 @@
 FROM amazoncorretto:21-alpine-jdk
 
+RUN apk --no-cache add curl
+
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
