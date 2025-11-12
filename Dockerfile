@@ -1,5 +1,4 @@
-# Use a specific version for reproducibility
-FROM amazoncorretto:21.0.3-alpine-jdk
+FROM amazoncorretto:21-alpine-jdk
 
 # Install curl
 RUN apk --no-cache add curl
