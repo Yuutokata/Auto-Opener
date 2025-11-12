@@ -1,4 +1,4 @@
-FROM amazoncorretto:21
+FROM amazoncorretto:21-alpine-jdk
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
