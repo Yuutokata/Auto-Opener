@@ -1,241 +1,144 @@
 # Auto-Opener
 
-Auto-Opener is a WebSocket-based message relay system that enables real-time communication between bots and users. It provides a secure and efficient way for bots to send messages to users through persistent WebSocket connections.
+Auto-Opener is a Kotlin/Ktor backend that manages authenticated WebSocket connections between services (bots) and end users. It issues JWTs, validates identities, stores known users in MongoDB, and delivers real-time messages to active user sessions.
 
+## Key Features
 
-# Auto-Opener
+- JWT-based authentication for user and service clients
+- WebSocket endpoints for user listeners and bot/service connections
+- HTTP APIs for token issuance and user synchronization
+- MongoDB-backed user validation and caching
+- Rate limiting for token, service, and WebSocket traffic
+- Structured logging and Micrometer/Prometheus metrics integration
+- Environment-variable based configuration
 
-## Konfiguration
+## Tech Stack
 
-Die Konfiguration erfolgt jetzt ausschließlich über Umgebungsvariablen oder eine `.env`-Datei. Die Datei `config.json` wird nicht mehr benötigt.
+- Kotlin (JVM 21)
+- Ktor 3 (Netty)
+- MongoDB (KMongo)
+- Gradle (Kotlin DSL)
+- Docker (optional runtime)
 
-Beispiel für eine `.env`-Datei:
+## Getting Started
 
+### Prerequisites
+
+- JDK 21
+- MongoDB instance
+
+### 1) Configure environment variables
+
+Create a `.env` file in the project root (or export variables directly):
+
+```bash
+cp .env.example .env
 ```
-MONGO_URI=mongodb://localhost:27017
-JWT_SECRET=dein_geheimer_schluessel
-SERVER_PORT=8080
-# ...weitere Variablen siehe .env.example
-```
 
-## Starten
+At minimum, update these values for non-local usage:
+
+- `JWT_SECRET`
+- `BOT_TOKEN` (comma-separated if multiple)
+- `MONGO_URI`
+- `MONGO_DB`
+
+### 2) Run locally
 
 ```bash
 ./gradlew run
 ```
 
+The server binds to `HOST` and `SERVER_PORT` (`0.0.0.0:8080` by default when not overridden).
+
+## API Overview
+
+### Health
+
+- `GET /health` - basic liveness response
+
+### Token issuance
+
+- `POST /token`
+  - Request body:
+    ```json
+    {
+      "token": "<user_id_or_service_token>",
+      "role": "user"
+    }
+    ```
+  - `role` can be `user` or `service`.
+  - Returns a signed JWT on success.
+
+### User management (service-authenticated)
+
+These routes require a valid **service JWT**:
+
+- `POST /users` - bulk synchronize users
+- `POST /users/add` - add or update one user
+- `POST /users/remove` - remove one user
+
+### Message dispatch (service-authenticated)
+
+- `POST /send_message?user_id=<discord_user_id>`
+  - Requires service JWT
+  - Sends payload to active WebSocket sessions of the target user
+
+## WebSocket Endpoints
+
+- `GET /listen/{userId}`
+  - User endpoint
+  - Requires a valid **user JWT**
+- `GET /bot`
+  - Service/bot endpoint
+  - Requires a valid **service JWT**
+
+JWTs can be provided via:
+
+- `Authorization` header (JWT)
+- `Sec-WebSocket-Protocol` header (token value)
+
+## Configuration
+
+Configuration is loaded from environment variables (and optionally `.env` via dotenv). See `.env.example` for the full list.
+
+| Variable | Purpose |
+| --- | --- |
+| `HOST` | Server bind host |
+| `SERVER_PORT` | Server port |
+| `MONGO_URI` | MongoDB connection URI |
+| `MONGO_DB` | MongoDB database name |
+| `BOT_TOKEN` | Comma-separated allowed service tokens |
+| `JWT_SECRET` | JWT signing secret |
+| `JWT_ISSUER` | JWT issuer |
+| `JWT_AUDIENCE` | JWT audience |
+| `RATE_LIMIT_TOKEN` / `RATE_LIMIT_TOKEN_DURATION` | Token endpoint rate limit |
+| `RATE_LIMIT_WS` / `RATE_LIMIT_WS_DURATION` | WebSocket rate limit |
+| `RATE_LIMIT_SERVICE` / `RATE_LIMIT_SERVICE_DURATION` | Service endpoint rate limit |
+| `HEALTH_CHECK_INTERVAL` | Connection health check interval |
+| `PONG_TIMEOUT` | WebSocket pong timeout |
+| `INACTIVITY_THRESHOLD` | Inactivity threshold |
+| `WS_TIMEOUT` | WebSocket timeout |
+| `WS_MAX_FRAME_SIZE` | Maximum WebSocket frame size |
+| `WS_MASKING` | Enable WebSocket masking |
+| `NETWORK_PARALLELISM`, `DATABASE_PARALLELISM`, `PROCESSING_PARALLELISM`, `MONITORING_PARALLELISM`, `WEBSOCKET_PARALLELISM`, `HEARTBEAT_PARALLELISM` | Dispatcher sizing |
+| `MONITORING_INTERVAL_SECONDS` | Monitoring loop interval |
+
 ## Docker
 
-Um das Projekt mit Docker zu starten:
+Build and run:
 
 ```bash
 docker build -t auto-opener .
 docker run --env-file .env -p 8080:8080 auto-opener
 ```
 
-## Beispiel für Umgebungsvariablen
+## Security Notes
 
-Siehe `.env.example` für alle verfügbaren Variablen.
-
-## Configuration
-
-The application is configured through the `config.json` file. Here are the key configuration options:
-
-```json
-{
-  "host": "0.0.0.0",
-  "port": 5064,
-  "mongodb": {
-    "uri": "mongodb://localhost:27017",
-    "db": "AutoOpener"
-  },
-  "tokens": {
-    "bot": [""]
-  },
-  "jwt": {
-    "secret": "",
-    "issuer": "auto-opener",
-    "audience": "chrome-extension"
-  },
-  "rateLimits": {
-    "token": {
-      "limit": 20,
-      "duration": 60
-    },
-    "websocket": {
-      "limit": 40,
-      "duration": 60
-    },
-    "service": {
-      "limit": 100,
-      "duration": 60
-    }
-  },
-  "healthCheckInterval": 5,
-  "pongTimeout": 25,
-  "getInactivityThreshold": 60,
-  "websocket": {
-    "timeout": 90,
-    "maxFrameSize": 65536,
-    "masking": false
-  },
-  "dispatchers": {
-    "networkParallelism": 30,
-    "databaseParallelism": 10,
-    "processingParallelism": 8,
-    "monitoringParallelism": 4,
-    "websocketParallelism": 6,
-    "heartbeatParallelism": 2,
-    "monitoringIntervalSeconds": 120
-  }
-}
-```
-
-### Configuration Options Explained
-
-| Option | Description |
-|--------|-------------|
-| `host` | Host to bind the server to |
-| `port` | Port to listen on |
-| `mongodb.uri` | MongoDB connection URI |
-| `mongodb.db` | Database name |
-| `tokens.bot` | Array of bot authentication tokens |
-| `jwt.secret` | JWT secret for token generation/validation |
-| `jwt.issuer` | JWT issuer |
-| `jwt.audience` | JWT audience (e.g., "chrome-extension") |
-| `rateLimits.token.limit` | Rate limit for token endpoints |
-| `rateLimits.token.duration` | Duration in seconds for token rate limiting |
-| `rateLimits.websocket.limit` | Rate limit for WebSocket connections |
-| `rateLimits.websocket.duration` | Duration in seconds for WebSocket rate limiting |
-| `rateLimits.service.limit` | Rate limit for service endpoints |
-| `rateLimits.service.duration` | Duration in seconds for service rate limiting |
-| `healthCheckInterval` | Interval for health checks in seconds |
-| `pongTimeout` | Timeout for ping/pong in seconds |
-| `getInactivityThreshold` | Inactivity threshold in seconds |
-| `websocket.timeout` | WebSocket timeout in seconds |
-| `websocket.maxFrameSize` | Maximum frame size in bytes |
-| `websocket.masking` | WebSocket frame masking |
-| `dispatchers.networkParallelism` | Network thread pool size |
-| `dispatchers.databaseParallelism` | Database thread pool size |
-| `dispatchers.processingParallelism` | Processing thread pool size |
-| `dispatchers.monitoringParallelism` | Monitoring thread pool size |
-| `dispatchers.websocketParallelism` | WebSocket thread pool size |
-| `dispatchers.heartbeatParallelism` | Heartbeat thread pool size |
-| `dispatchers.monitoringIntervalSeconds` | Monitoring interval in seconds |
-
-## Usage
-
-### Bot Integration
-
-Bots can connect to the WebSocket server and send messages to users. Here's a basic example:
-
-1. Authenticate the Bot by requesting the token route:
-   ```
-   POST /token
-   ```
-   Body:
-   ```json
-   {
-     "token": "your_bot_token_here",
-     "role": "service"
-   }
-    ```
-2. You will get this response:
-    ```json
-   {"token": "your_jwt_token"}
-   ```
-
-3. Connect to the WebSocket endpoint with the jwt token passed using the Sec-WebSocket-Protocol header or the Authorization header:
-   ```
-   GET /bot
-   ```
-
-4. Send a message to a user:
-   ```json
-   {
-     "userId": "user_id_here",
-     "message": {
-       "type": "notification",
-       "content": "Hello from the bot!"
-     }
-   }
-   ```
-
-5. Receive delivery status:
-   ```json
-   {
-     "status": "success",
-     "message": "Message delivered to 1/1 active sessions",
-     "userId": "user_id_here"
-   }
-   ```
-
-### User Integration
-
-Users can connect to receive messages from bots:
-
-1. Authenticate the User by requesting the token route:
-   ```
-   GET /token?userId={USER_ID}
-   ```
-   
-2. You will get this response:
-    ```json
-   {"token": "your_jwt_token"}
-   ```
-
-3. Connect to the WebSocket endpoint with a user JWT passed using the Sec-WebSocket-Protocol header or the Authorization header:
-   ```
-   GET /listen/{USER_ID}
-   ```
-   Header:
-   ```
-   Sec-WebSocket-Protocol: your_jwt_token
-   ```
-
-4. Maintain the connection to receive messages from bots in real-time
-
-## Security Considerations
-
-- Always use HTTPS in production
-- Keep your JWT secret secure
-- Regularly rotate bot tokens
-- Set appropriate rate limits to prevent abuse
-
-## Monitoring
-
-The application provides detailed logs with structured logging using MDC (Mapped Diagnostic Context) for better observability. It also supports metrics collection through Micrometer with Prometheus integration.
-
-### Loki Logging Integration
-
-Auto-Opener integrates with Grafana Loki for centralized log aggregation. The logs are sent to Loki in JSON format with proper labels for efficient querying.
-
-#### System Variables for Loki Configuration
-
-You can configure the Loki integration using the following environment variables:
-
-| Variable | Description | Default Value |
-|----------|-------------|---------------|
-| `LOKI_URL` | URL for the Loki server | http://b856d7c7-976f-40b5-bcf7-a25f6a2daeea:5001/loki/api/v1/push |
-| `APP_NAME` | Application name used in labels | - |
-| `ENVIRONMENT` | Environment name (production, staging, development) | development |
-| `HOSTNAME` | Host name for identifying the source | System hostname |
-| `LOG_LEVEL` | Logging level | INFO |
-
-**Note:** Logs are only sent to Loki when `ENVIRONMENT` is set to "production".
-
-#### Example Usage
-
-```bash
-# Run with custom Loki configuration
-export LOKI_URL="http://your-loki-server:3100/loki/api/v1/push"
-export APP_NAME="auto-opener"
-export ENVIRONMENT="production"
-export HOSTNAME="app-server-01"
-export LOG_LEVEL="INFO"
-./gradlew run
-```
+- Use strong, unique values for `JWT_SECRET` and `BOT_TOKEN`
+- Terminate TLS at your edge/proxy in production
+- Rotate service tokens regularly
+- Tune rate limits for your traffic profile
 
 ## License
 
-[MIT License](LICENSE)
+MIT (see `LICENSE`)
