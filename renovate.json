@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Auto-Opener: Keep Dockerfile and Gradle updated, never Automerge",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["dockerfile", "gradle", "gradle-wrapper"],
+  "dependencyDashboard": true,
+  "pinDigests": false,
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "automerge": false,
+  "prBodyNotes": [
+    ":warning: Merge on `main` results in a Dokploy-Autodeploy."
+  ]
+}
