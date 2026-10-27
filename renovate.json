@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Auto-Opener: Keep Dockerfile and Gradle updated, never Automerge",
+  "description": "Auto-Opener: keep Dockerfile and Gradle up to date, never automerge",
   "extends": ["config:recommended"],
   "enabledManagers": ["dockerfile", "gradle", "gradle-wrapper"],
   "dependencyDashboard": true,
@@ -9,6 +9,29 @@
   "internalChecksFilter": "strict",
   "automerge": false,
   "prBodyNotes": [
-    ":warning: Merge on `main` results in a Dokploy-Autodeploy."
+    ":warning: Merging into `main` triggers the Dokploy autodeploy of **lightningatc-autoopener** (short bot restart)."
+  ],
+  "packageRules": [
+    {
+      "description": "Kotlin plugins (jvm + serialization) always together on the same version",
+      "matchDepNames": ["org.jetbrains.kotlin.jvm", "org.jetbrains.kotlin.plugin.serialization"],
+      "groupName": "Kotlin",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Ktor Gradle plugin together with the Ktor libraries",
+      "matchDepNames": ["io.ktor.plugin"],
+      "groupName": "Ktor"
+    },
+    {
+      "description": "Ktor libraries",
+      "matchPackageNames": ["io.ktor:**"],
+      "groupName": "Ktor"
+    },
+    {
+      "description": "KMongo and KMongo coroutine together",
+      "matchPackageNames": ["org.litote.kmongo:**"],
+      "groupName": "KMongo"
+    }
   ]
 }
