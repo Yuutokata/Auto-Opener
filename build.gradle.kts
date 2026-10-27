@@ -40,7 +40,7 @@ dependencies {
     implementation("org.litote.kmongo:kmongo-coroutine:5.2.0")
     implementation("io.ktor:ktor-server-cors:3.0.3")
 
-    implementation("org.slf4j:slf4j-api:2.0.13")
+    implementation("org.slf4j:slf4j-api:2.0.20")
     implementation("net.logstash.logback:logstash-logback-encoder:7.4")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
     implementation("com.github.loki4j:loki-logback-appender:1.5.1")
