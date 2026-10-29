@@ -1,24 +1,37 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Auto-Opener: keep Dockerfile and Gradle up to date in one bundled PR, never automerge",
+  "description": "Auto-Opener: bundled updates, patches automerged, minor/major merged manually",
   "extends": ["config:recommended"],
   "enabledManagers": ["dockerfile", "gradle", "gradle-wrapper"],
   "dependencyDashboard": true,
   "assignees": ["Yuutokata"],
   "assignAutomerge": true,
   "pinDigests": false,
+  "separateMinorPatch": true,
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
-  "automerge": false,
+  "automergeType": "pr",
+  "platformAutomerge": false,
   "prBodyNotes": [
     ":warning: Merging into `main` triggers the Dokploy autodeploy of **lightningatc-autoopener** (short bot restart)."
   ],
   "packageRules": [
     {
-      "description": "Bundle all updates (including major) into a single PR",
+      "description": "Bundle all updates: one PR for patches, one PR for minor/major",
       "matchPackageNames": ["*"],
-      "groupName": "all dependencies",
+      "groupName": "{{#if isPatch}}all patch updates{{else}}all dependencies{{/if}}",
       "separateMajorMinor": false
+    },
+    {
+      "description": "Automerge patch updates (only after minimumReleaseAge, no CI)",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "ignoreTests": true
+    },
+    {
+      "description": "Never automerge minor or major updates",
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
     }
   ]
 }
