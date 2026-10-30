@@ -6,6 +6,7 @@ import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.close
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration
@@ -33,7 +34,7 @@ class Connection(
 
     /** Sends a close frame and cancels the session if the peer does not finish the handshake within [grace]. */
     suspend fun close(reason: CloseReason, grace: Duration = 2.seconds) {
-        runCatching { session.close(reason) }
+        withTimeoutOrNull(grace) { runCatching { session.close(reason) } }
         delay(grace)
         session.cancel()
     }

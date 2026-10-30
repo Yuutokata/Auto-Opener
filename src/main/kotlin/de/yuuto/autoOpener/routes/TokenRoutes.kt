@@ -9,6 +9,7 @@ import de.yuuto.autoOpener.users.User
 import de.yuuto.autoOpener.users.UserRepository
 import de.yuuto.autoOpener.users.UserSecrets
 import de.yuuto.autoOpener.users.userIdPattern
+import de.yuuto.autoOpener.users.userSecretPattern
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.request.receive
@@ -47,6 +48,10 @@ fun Route.tokenRoutes(
                             HttpStatusCode.Unauthorized,
                             ErrorResponse("User ID not found in database, this could take some time of you are new to the server."),
                         )
+                        return@post
+                    }
+                    if (request.secret != null && !userSecretPattern.matches(request.secret)) {
+                        call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Invalid user secret"))
                         return@post
                     }
                     if (!secretAccepted(user, request.secret, requireUserSecret)) {

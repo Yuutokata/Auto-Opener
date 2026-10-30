@@ -5,6 +5,7 @@ import de.yuuto.autoOpener.routes.UserInput
 import de.yuuto.autoOpener.routes.UserRemoveRequest
 import de.yuuto.autoOpener.routes.UsersList
 import de.yuuto.autoOpener.users.UserSecrets
+import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -13,12 +14,14 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class UserRoutesTest {
     private suspend inline fun <reified T> TestApp.postAsService(path: String, body: T): HttpResponse {
@@ -107,5 +110,17 @@ class UserRoutesTest {
         assertEquals(HttpStatusCode.BadRequest, postAsService("/users", UsersList(emptyList())).status)
         val duplicates = UsersList(listOf(UserInput(USER_ID, "a"), UserInput(USER_ID, "b")))
         assertEquals(HttpStatusCode.BadRequest, postAsService("/users", duplicates).status)
+    }
+
+    @Test
+    fun `bulk sync disconnects users it removes`() = runApp {
+        users.upsert(USER_ID, "alice", null)
+        val jwt = userToken()
+        val session = client.webSocketSession("/listen/$USER_ID") { bearerAuth(jwt) }
+        awaitConnections(USER_ID, 1)
+
+        postAsService("/users", UsersList(listOf(UserInput(OTHER_USER_ID, "bob"))))
+
+        assertEquals("User removed", withTimeout(5.seconds) { session.closeReason.await() }?.message)
     }
 }

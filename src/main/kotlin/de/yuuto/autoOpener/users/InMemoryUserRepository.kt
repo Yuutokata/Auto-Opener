@@ -22,6 +22,6 @@ class InMemoryUserRepository(private val clock: () -> Long = System::currentTime
         val toRemove = users.keys.filter { it !in incomingIds }
         toAdd.forEach { (id, name) -> upsert(id, name, null) }
         toRemove.forEach { users.remove(it) }
-        return SyncOutcome(added = toAdd.size, removed = toRemove.size, unchanged = users.size - toAdd.size)
+        return SyncOutcome(added = toAdd.size, removedIds = toRemove, unchanged = users.size - toAdd.size)
     }
 }

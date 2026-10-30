@@ -42,6 +42,9 @@ fun Route.userRoutes(users: UserRepository, connections: ConnectionManager) {
                 }
 
                 val (outcome, elapsed) = measureTimedValue { users.synchronize(list.map { it.id to it.name }) }
+                outcome.removedIds.forEach {
+                    connections.disconnectUser(it, CloseReason(CloseReason.Codes.VIOLATED_POLICY, "User removed"))
+                }
                 logger.info("Synchronized users: added={} removed={} unchanged={}", outcome.added, outcome.removed, outcome.unchanged)
                 call.respond(
                     SyncResponse("Users synchronized successfully", outcome.added, outcome.removed, outcome.unchanged, elapsed.inWholeMilliseconds)

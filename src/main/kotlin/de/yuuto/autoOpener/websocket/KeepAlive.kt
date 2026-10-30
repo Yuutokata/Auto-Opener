@@ -6,10 +6,13 @@ import io.ktor.websocket.Frame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Application-level keep-alive. Pings every [WebSocketSettings.pingInterval] keep idle connections open through
@@ -57,9 +60,14 @@ class KeepAlive(
 
     private suspend fun ping(connection: Connection, now: Long) {
         try {
-            connection.session.outgoing.send(Frame.Ping(ByteArray(0)))
+            // A client that stopped reading must not stall the pass for everyone else.
+            withTimeout(PING_SEND_TIMEOUT) { connection.session.outgoing.send(Frame.Ping(ByteArray(0))) }
             connection.lastPingSentAt.set(now)
             connection.pendingPingSince.set(now)
+        } catch (e: TimeoutCancellationException) {
+            logger.info("Closing {}: ping could not be queued", connection)
+            registry.remove(connection)
+            scope.launch { connection.close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Ping failed")) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -67,5 +75,9 @@ class KeepAlive(
             registry.remove(connection)
             scope.launch { connection.close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, "Ping failed")) }
         }
+    }
+
+    private companion object {
+        val PING_SEND_TIMEOUT = 1.seconds
     }
 }

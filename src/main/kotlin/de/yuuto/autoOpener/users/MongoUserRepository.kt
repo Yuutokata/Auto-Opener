@@ -72,7 +72,7 @@ class MongoUserRepository(uri: String, databaseName: String) : UserRepository, A
         toAdd.forEach { (id, name) -> upsert(id, name, null) }
         if (toRemove.isNotEmpty()) users.deleteMany(Filters.`in`("id", toRemove))
 
-        return SyncOutcome(added = toAdd.size, removed = toRemove.size, unchanged = existing.size - toRemove.size)
+        return SyncOutcome(added = toAdd.size, removedIds = toRemove, unchanged = existing.size - toRemove.size)
     }
 
     override fun close() = client.close()

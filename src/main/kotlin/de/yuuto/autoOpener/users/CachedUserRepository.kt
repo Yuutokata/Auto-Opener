@@ -19,17 +19,27 @@ class CachedUserRepository(
     }
 
     override suspend fun upsert(id: String, name: String, secretHash: String?): Boolean {
-        cache.invalidate(id)
-        return delegate.upsert(id, name, secretHash)
+        return try {
+            delegate.upsert(id, name, secretHash)
+        } finally {
+            cache.invalidate(id)
+        }
     }
 
     override suspend fun delete(id: String): Boolean {
-        cache.invalidate(id)
-        return delegate.delete(id)
+        return try {
+            delegate.delete(id)
+        } finally {
+            cache.invalidate(id)
+        }
     }
 
     override suspend fun synchronize(incoming: List<Pair<String, String>>): SyncOutcome {
-        cache.invalidateAll()
-        return delegate.synchronize(incoming)
+        return try {
+            delegate.synchronize(incoming)
+        } finally {
+            // Invalidate after the write so a concurrent lookup cannot re-cache a user that was just deleted.
+            cache.invalidateAll()
+        }
     }
 }

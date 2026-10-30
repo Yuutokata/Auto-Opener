@@ -93,6 +93,12 @@ fun Application.module(
     }
     monitor.subscribe(ApplicationStopped) { mongo?.close() }
 
+    if (config.clientIpHeader == null) {
+        logger.warn("CLIENT_IP_HEADER is not set: behind a reverse proxy all clients share one rate limit bucket")
+    }
+    if (config.jwt.secret.length < 32) {
+        logger.warn("JWT_SECRET is shorter than 32 characters; use a long random value")
+    }
     logger.info(
         "Auto-Opener started (user secret required: {}, max connections per user: {})",
         config.requireUserSecret, config.webSocket.maxConnectionsPerUser,

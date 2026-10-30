@@ -52,6 +52,12 @@ class TokenRoutesTest {
     }
 
     @Test
+    fun `a malformed secret is rejected before hashing`() = runApp {
+        users.upsert(USER_ID, "alice", null)
+        assertEquals(HttpStatusCode.Unauthorized, requestToken(USER_ID, secret = "x".repeat(100_000)).status)
+    }
+
+    @Test
     fun `missing secret is tolerated only while the secret is optional`() = runApp {
         users.upsert(USER_ID, "alice", UserSecrets.hash(USER_SECRET))
         assertEquals(HttpStatusCode.OK, requestToken(USER_ID).status)
