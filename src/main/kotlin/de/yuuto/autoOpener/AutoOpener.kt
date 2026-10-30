@@ -69,7 +69,7 @@ fun Application.module(
     val connections = ConnectionManager(registry, BotMessageHandler(notifier), scope)
     KeepAlive(registry, config.webSocket, scope).start()
 
-    configureHttp()
+    configureHttp(config.clientIpHeader)
     configureAuthentication(jwtService, userRepository, serviceTokens)
     configureRateLimit(config.rateLimits, config.clientIpHeader)
     configureWebSockets(config.webSocket)
