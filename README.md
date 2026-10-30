@@ -1,144 +1,71 @@
 # Auto-Opener
 
-Auto-Opener is a Kotlin/Ktor backend that manages authenticated WebSocket connections between services (bots) and end users. It issues JWTs, validates identities, stores known users in MongoDB, and delivers real-time messages to active user sessions.
+Kotlin/Ktor backend that connects a Discord bot (the Keyword Pinger) with users of a Chrome extension. The extension keeps a WebSocket open; when the bot finds a matching product it sends the link here and the server forwards it to every live connection of that user, so the extension can open it immediately.
 
-## Key Features
+## Features
 
-- JWT-based authentication for user and service clients
-- WebSocket endpoints for user listeners and bot/service connections
-- HTTP APIs for token issuance and user synchronization
-- MongoDB-backed user validation and caching
-- Rate limiting for token, service, and WebSocket traffic
-- Structured logging and Micrometer/Prometheus metrics integration
-- Environment-variable based configuration
+- JWT authentication for users (extension) and services (bot), optional per-user secret
+- WebSocket endpoints for users and the bot, with application-level keep-alive
+- HTTP API for token issuance, user synchronization and message dispatch
+- MongoDB-backed user store with an in-memory cache
+- Per-client rate limiting
+- Plain console logging, configured through environment variables
 
-## Tech Stack
+## Getting started
 
-- Kotlin (JVM 21)
-- Ktor 3 (Netty)
-- MongoDB (KMongo)
-- Gradle (Kotlin DSL)
-- Docker (optional runtime)
-
-## Getting Started
-
-### Prerequisites
-
-- JDK 21
-- MongoDB instance
-
-### 1) Configure environment variables
-
-Create a `.env` file in the project root (or export variables directly):
+Requirements: JDK 21 (Gradle downloads the toolchain if needed) and a MongoDB instance.
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # then fill in BOT_TOKEN, JWT_SECRET and MONGO_URI
+./gradlew run          # gradlew.bat on Windows
+./gradlew test
 ```
 
-At minimum, update these values for non-local usage:
+The server refuses to start when `BOT_TOKEN`, `JWT_SECRET` or `MONGO_URI` are missing or invalid.
 
-- `JWT_SECRET`
-- `BOT_TOKEN` (comma-separated if multiple)
-- `MONGO_URI`
-- `MONGO_DB`
+## HTTP API
 
-### 2) Run locally
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /health` | none | Liveness |
+| `POST /token` | none | Issue a JWT. Body: `{"token": "<discord id or service token>", "role": "user" \| "service", "secret": "<user secret>"}` |
+| `POST /users` | service | Synchronize all users (adds missing, removes absent) |
+| `POST /users/add` | service | Add or update one user; optional `secret` (64 hex characters) is stored as a hash |
+| `POST /users/remove` | service | Remove a user and disconnect their sockets |
+| `POST /send_message?user_id=<id>` | service | Send `{"message", "url"}`; the extension receives the bare URL |
 
-```bash
-./gradlew run
-```
+Tokens are sent as `Authorization: Bearer <jwt>` or, for browsers, in the `Sec-WebSocket-Protocol` header.
 
-The server binds to `HOST` and `SERVER_PORT` (`0.0.0.0:8080` by default when not overridden).
+## WebSocket endpoints
 
-## API Overview
+- `GET /listen/{userId}`: user socket, requires a user JWT whose id matches the path. Up to `MAX_CONNECTIONS_PER_USER` connections per user; the oldest is closed with code 1008 when the limit is exceeded.
+- `GET /bot`: service socket. The bot sends `{"userId": "...", "message": {"message": "...", "url": "..."}}` and receives a status reply per message.
 
-### Health
-
-- `GET /health` - basic liveness response
-
-### Token issuance
-
-- `POST /token`
-  - Request body:
-    ```json
-    {
-      "token": "<user_id_or_service_token>",
-      "role": "user"
-    }
-    ```
-  - `role` can be `user` or `service`.
-  - Returns a signed JWT on success.
-
-### User management (service-authenticated)
-
-These routes require a valid **service JWT**:
-
-- `POST /users` - bulk synchronize users
-- `POST /users/add` - add or update one user
-- `POST /users/remove` - remove one user
-
-### Message dispatch (service-authenticated)
-
-- `POST /send_message?user_id=<discord_user_id>`
-  - Requires service JWT
-  - Sends payload to active WebSocket sessions of the target user
-
-## WebSocket Endpoints
-
-- `GET /listen/{userId}`
-  - User endpoint
-  - Requires a valid **user JWT**
-- `GET /bot`
-  - Service/bot endpoint
-  - Requires a valid **service JWT**
-
-JWTs can be provided via:
-
-- `Authorization` header (JWT)
-- `Sec-WebSocket-Protocol` header (token value)
+The server pings every connection every `PING_INTERVAL` seconds and closes connections that stay silent for `PONG_TIMEOUT` seconds afterwards.
 
 ## Configuration
 
-Configuration is loaded from environment variables (and optionally `.env` via dotenv). See `.env.example` for the full list.
+All settings are environment variables (a local `.env` is read as fallback). See `.env.example` for the complete list with comments.
 
-| Variable | Purpose |
-| --- | --- |
-| `HOST` | Server bind host |
-| `SERVER_PORT` | Server port |
-| `MONGO_URI` | MongoDB connection URI |
-| `MONGO_DB` | MongoDB database name |
-| `BOT_TOKEN` | Comma-separated allowed service tokens |
-| `JWT_SECRET` | JWT signing secret |
-| `JWT_ISSUER` | JWT issuer |
-| `JWT_AUDIENCE` | JWT audience |
-| `RATE_LIMIT_TOKEN` / `RATE_LIMIT_TOKEN_DURATION` | Token endpoint rate limit |
-| `RATE_LIMIT_WS` / `RATE_LIMIT_WS_DURATION` | WebSocket rate limit |
-| `RATE_LIMIT_SERVICE` / `RATE_LIMIT_SERVICE_DURATION` | Service endpoint rate limit |
-| `HEALTH_CHECK_INTERVAL` | Connection health check interval |
-| `PONG_TIMEOUT` | WebSocket pong timeout |
-| `INACTIVITY_THRESHOLD` | Inactivity threshold |
-| `WS_TIMEOUT` | WebSocket timeout |
-| `WS_MAX_FRAME_SIZE` | Maximum WebSocket frame size |
-| `WS_MASKING` | Enable WebSocket masking |
-| `NETWORK_PARALLELISM`, `DATABASE_PARALLELISM`, `PROCESSING_PARALLELISM`, `MONITORING_PARALLELISM`, `WEBSOCKET_PARALLELISM`, `HEARTBEAT_PARALLELISM` | Dispatcher sizing |
-| `MONITORING_INTERVAL_SECONDS` | Monitoring loop interval |
+Behind a reverse proxy set `CLIENT_IP_HEADER` (for example `X-Forwarded-For`), otherwise all clients share the proxy's address for rate limiting.
+
+### Per-user secrets
+
+1. The bot generates a 32-byte hex secret per user and registers it with `POST /users/add`.
+2. The extension sends it to `POST /token`.
+3. Once everyone migrated, set `REQUIRE_USER_SECRET=true`.
+
+See `docs/keyword-pinger-prompt.md` (bot side) and `docs/extension-changes.md` (extension side).
 
 ## Docker
-
-Build and run:
 
 ```bash
 docker build -t auto-opener .
 docker run --env-file .env -p 8080:8080 auto-opener
 ```
 
-## Security Notes
-
-- Use strong, unique values for `JWT_SECRET` and `BOT_TOKEN`
-- Terminate TLS at your edge/proxy in production
-- Rotate service tokens regularly
-- Tune rate limits for your traffic profile
+The image is multi-stage, runs as a non-root user and has a health check on `/health`.
 
 ## License
 
-MIT (see `LICENSE`)
+[MIT License](LICENSE)
