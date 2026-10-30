@@ -1,0 +1,56 @@
+services:
+  auto-opener:
+    build:
+      context: .
+    image: auto-opener:latest
+    restart: unless-stopped
+    stop_grace_period: 15s
+    environment:
+      # Required: compose refuses to start when one of these is missing.
+      MONGO_URI: ${MONGO_URI:?MONGO_URI is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      # Server
+      HOST: ${HOST:-0.0.0.0}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-X-Forwarded-For}
+      MONGO_DB: ${MONGO_DB:-AutoOpener}
+      # Authentication
+      JWT_ISSUER: ${JWT_ISSUER:-auto-opener}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-chrome-extension}
+      JWT_TTL_HOURS: ${JWT_TTL_HOURS:-72}
+      REQUIRE_USER_SECRET: ${REQUIRE_USER_SECRET:-false}
+      # Rate limits (requests per client and period in seconds)
+      RATE_LIMIT_TOKEN: ${RATE_LIMIT_TOKEN:-100}
+      RATE_LIMIT_TOKEN_DURATION: ${RATE_LIMIT_TOKEN_DURATION:-60}
+      RATE_LIMIT_WS: ${RATE_LIMIT_WS:-40}
+      RATE_LIMIT_WS_DURATION: ${RATE_LIMIT_WS_DURATION:-60}
+      RATE_LIMIT_SERVICE: ${RATE_LIMIT_SERVICE:-100}
+      RATE_LIMIT_SERVICE_DURATION: ${RATE_LIMIT_SERVICE_DURATION:-60}
+      # WebSocket
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-5}
+      PING_INTERVAL: ${PING_INTERVAL:-25}
+      PONG_TIMEOUT: ${PONG_TIMEOUT:-20}
+      MAX_CONNECTIONS_PER_USER: ${MAX_CONNECTIONS_PER_USER:-3}
+      WS_MAX_FRAME_SIZE: ${WS_MAX_FRAME_SIZE:-65536}
+      WS_MASKING: ${WS_MASKING:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # No published ports: Traefik and the bot reach the app over dokploy-network.
+    networks:
+      dokploy-network:
+        aliases:
+          # Keeps the internal address stable for the bot and for the Traefik service URL.
+          - lightningatc-autoopener-ro5gh2
+    mem_limit: 768m
+    cpus: 1.5
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  dokploy-network:
+    external: true
