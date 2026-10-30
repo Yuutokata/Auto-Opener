@@ -4,41 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Kotlin/Ktor 3 (Netty, JVM 21) backend that relays messages from service clients (Discord bots) to end users (a Chrome extension) over authenticated WebSockets. Users are stored in MongoDB. See `README.md` for the API and env var tables; `.env.example` lists every variable.
+Kotlin/Ktor 3 (Netty, JVM 21) relay: a Discord bot (the Keyword Pinger, separate repo) sends product links over a service WebSocket or HTTP, and the server forwards them to the live WebSocket connections of the target user (a Chrome extension maintained by third parties, which we cannot change). `README.md` has the API; `.env.example` lists every variable.
+
+**Compatibility rule:** the extension and the bot are outside this repo. Endpoints, paths, JSON shapes, status codes, token transport and close behavior are a contract. Anything incompatible must be opt-in (env flag, default off) and documented in `docs/extension-changes.md` (extension) or `docs/keyword-pinger-prompt.md` (bot). Keep these two files in sync when the contract changes. All files in the repo are written in English.
 
 ## Commands
 
 Use `gradlew.bat` on Windows, `./gradlew` elsewhere.
 
-- Run: `./gradlew run` (main class `de.yuuto.autoOpener.AutoOpenerKt`; reads env vars or a local `.env`)
-- Build: `./gradlew build`; distribution: `./gradlew installDist` (Docker runs `build/install/Auto-Opener/bin/Auto-Opener`)
-- Tests: none exist and no test dependencies are configured yet. Add JUnit/`ktor-server-test-host` to `build.gradle.kts` before writing any. A single test would run with `./gradlew test --tests "<fqcn>"`.
-- No linter (ktlint/detekt) is configured.
+- Run: `./gradlew run` (needs `BOT_TOKEN`, `JWT_SECRET`, `MONGO_URI`; reads env vars, then a local `.env`)
+- Build + tests: `./gradlew build`; tests only: `./gradlew test`; one test: `./gradlew test --tests "de.yuuto.autoOpener.TokenRoutesTest"`
+- Distribution: `./gradlew installDist` (output `build/install/Auto-Opener`)
+- No linter is configured.
 
 ## Architecture
 
-**Wiring.** `AutoOpener.kt` holds a global `dependencyProvider` (`DispatcherProvider`, `MongoClient`, `WebSocketManager`) created at class-load time. `Application.module()` installs plugins in order: serialization, security (JWT), rate limit, security headers, monitoring, websockets, routing. Constructor injection is passed to routes, but `plugins/Security.kt` reaches into the global `dependencyProvider` directly. A JVM shutdown hook (not Ktor lifecycle events) closes sockets, the manager, Mongo and dispatchers.
+Package `de.yuuto.autoOpener`, wiring in `AutoOpener.kt` (`Application.module(config, users?, registry?)`). Tests call `module` with an `InMemoryUserRepository`; production builds a `CachedUserRepository(MongoUserRepository)`.
 
-**Auth.** Two JWT (HMAC256) schemes, both with the same issuer/audience from config:
-- `auth-user`: claim `role=user`, `token` = a 15–20 digit Discord ID that must exist in the `users` collection (cache first, then DB).
-- `auth-service`: claim `role=service`, `token` must be in the `BOT_TOKEN` list.
-Tokens are minted by `POST /token` (`routes/generateToken.kt`). A JWT is read from `Authorization: Bearer` or, for browsers that cannot set headers on WebSockets, from `Sec-WebSocket-Protocol`. `Websocket.kt` echoes that header back in a pipeline interceptor so the handshake succeeds.
+- `config/AppConfig`: typed settings parsed from env, fails fast (`ConfigurationException`) on missing/invalid values. Add new settings here and to `.env.example`.
+- `auth/`: two JWT schemes, `auth-user` (claim `token` = Discord id, must exist in the user store) and `auth-service` (claim `token` = SHA-256 of a configured service token, see `ServiceTokens`). Token comes from `Authorization: Bearer` or `Sec-WebSocket-Protocol` (echoed back in `configureWebSockets`, browsers require that). Failures answer 401.
+- `users/`: `UserRepository` interface; the Mongo implementation uses the official Kotlin driver with `bson-kotlinx` and writes via `updateOne` upserts (never replaces `_id`). Secrets are stored only as SHA-256 hash (`UserSecrets`); a null hash on upsert keeps the stored one.
+- `routes/`: HTTP routes. `/token` implements the optional per-user secret (`REQUIRE_USER_SECRET`).
+- `websocket/`: `ConnectionRegistry` (live connections, per-user limit with oldest-first eviction), `ConnectionManager` (register, read frames, unregister; ping/pong/close handling), `KeepAlive` (app-level pings, closes silent connections; Ktor's own ping is off), `UserNotifier` (parallel delivery with timeout), `BotMessageHandler` (frames from the bot).
+- `plugins/`: content negotiation, default security headers, `StatusPages` (generic error bodies), per-client rate limits (`RateLimiting.kt`: key = client IP for `/token`, JWT subject elsewhere, IP taken from `CLIENT_IP_HEADER`, last entry).
 
-**WebSockets.** `plugins/Websocket.kt` defines `/listen/{userId}` (user, one live connection per user: older ones are cleaned up on reconnect) and `/bot` (service) using `webSocketRaw`, and hands off to `util/WebSocketManager.kt`. The manager is the core:
-- Connection IDs encode identity: `<userId>_<uuid>` for users, `bot_<uuid>` for bots. `extractUserId`/`extractBotId` and the `startsWith("bot_")` checks depend on this format.
-- `activeConnections`, `userSessions`, `botSessions` are separate maps that must stay consistent. A 60s loop (`verifySessions`, `verifySessionIntegrity`) repairs drift.
-- Bot text frames are `WebsocketReceive` JSON (`userId` + `message`), forwarded to every active session of that user, and the bot receives a `BotResponse` status. `POST /send_message` (`routes/messageRoutes.kt`) is the HTTP equivalent.
-- Keepalive is app-level: Ktor `pingPeriod` is disabled; `monitorConnections()` sends custom pings and closes connections that miss the pong timeout.
+Two delivery formats are intentional: messages from the bot socket reach the extension as the JSON object `{"message","url"}`, while `POST /send_message` sends the bare URL.
 
-**Persistence.** `util/MongoClient.kt` wraps KMongo (coroutine) with an in-memory `userCache` that is write-through on add/remove and fully refreshed on demand. `POST /users` synchronizes by diffing the incoming list against the DB (adds missing, removes absent).
+## Conventions
 
-**Concurrency.** `DispatcherProvider` exposes separate sized dispatchers (network, database, processing, monitoring, websocket, heartbeat), configured via `*_PARALLELISM` env vars. Use the matching dispatcher with `withContext`.
-
-**Config.** `util/Config.kt` is the single source for settings: `System.getenv` → `.env` → hardcoded default. Several defaults are insecure placeholders (`JWT_SECRET=secret`, `BOT_TOKEN=testtoken`); there is no fail-fast on missing values.
-
-## Conventions and gotchas
-
-- Logging is structured: set `MDC.put("event_type", ...)` plus context keys, log, then `MDC.clear()`. Follow this pattern; logback config is in `src/main/resources/logback.xml` (JSON/Loki appenders).
-- Dependency versions are hardcoded in `build.gradle.kts` (no version catalog), updated by Renovate.
-- `README.md` says the server defaults to port 8080 and the Dockerfile exposes 8080, but `.env.example` uses 5064; check `SERVER_PORT`.
-- The Dockerfile is single-stage and runs as root; `PONG_TIMEOUT` is in seconds in `.env.example` but the code default is `30000`.
+- Logging is plain SLF4J text (`logback.xml`, level via `LOG_LEVEL`). Put ids in the message; never log tokens, secrets or JWTs.
+- Dependency versions live in `gradle/libs.versions.toml`.
+- Tests use Ktor `testApplication` against the in-memory repository (`src/test/.../TestSupport.kt`); WebSocket tests wait for registration with `awaitConnections`.
