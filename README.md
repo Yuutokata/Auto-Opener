@@ -68,4 +68,4 @@ The image is multi-stage, runs as a non-root user and has a health check on `/he
 
 ## License
 
-MIT (see `LICENSE`)
+[MIT License](LICENSE)
