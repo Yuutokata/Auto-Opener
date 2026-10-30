@@ -5,7 +5,8 @@ WORKDIR /app
 COPY gradlew ./
 COPY gradle ./gradle
 COPY settings.gradle.kts build.gradle.kts gradle.properties ./
-RUN chmod +x gradlew && ./gradlew --no-daemon dependencies > /dev/null
+# The sed strips CRLF line endings that a Windows checkout with autocrlf adds to the wrapper script.
+RUN sed -i 's/\r$//' gradlew && chmod +x gradlew && ./gradlew --no-daemon dependencies > /dev/null
 
 COPY src ./src
 RUN ./gradlew --no-daemon installDist -x test
