@@ -19,6 +19,9 @@ import io.ktor.websocket.CloseReason
 import org.slf4j.LoggerFactory
 import kotlin.time.measureTimedValue
 
+/** Upper bound for one `/users/status` request; the bot sends larger lists in batches. */
+const val MAX_STATUS_IDS = 1000
+
 fun Route.userRoutes(users: UserRepository, connections: ConnectionManager) {
     val logger = LoggerFactory.getLogger("UserRoutes")
 
@@ -76,6 +79,30 @@ fun Route.userRoutes(users: UserRepository, connections: ConnectionManager) {
                         operation = operation,
                     )
                 )
+            }
+
+            post("/users/status") {
+                val ids = call.receive<UserStatusRequest>().userIds.distinct()
+                if (ids.size > MAX_STATUS_IDS) {
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse("At most $MAX_STATUS_IDS user IDs per request"))
+                    return@post
+                }
+                if (ids.any { !userIdPattern.matches(it) }) {
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user ID format"))
+                    return@post
+                }
+                val stored = users.findMany(ids).associateBy { it.id }
+                val statuses = ids.map { id ->
+                    val user = stored[id]
+                    UserStatus(
+                        id = id,
+                        registered = user != null,
+                        hasSecret = user?.secretHash != null,
+                        connected = connections.registry.forUser(id).isNotEmpty(),
+                    )
+                }
+                logger.debug("Status requested for {} users, {} with a secret", ids.size, statuses.count { it.hasSecret })
+                call.respond(UserStatusResponse(statuses))
             }
 
             post("/users/remove") {

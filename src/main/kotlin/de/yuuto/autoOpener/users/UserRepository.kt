@@ -3,6 +3,9 @@ package de.yuuto.autoOpener.users
 interface UserRepository {
     suspend fun find(id: String): User?
 
+    /** Returns the stored users among [ids]; ids without a user are left out. */
+    suspend fun findMany(ids: Collection<String>): List<User>
+
     /**
      * Creates or updates a user. A null [secretHash] keeps the stored hash of an existing user.
      * Returns true if the user was newly created.

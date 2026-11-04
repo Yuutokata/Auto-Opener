@@ -21,6 +21,16 @@ data class SingleUserRequest(val user: UserInput)
 data class UserRemoveRequest(val userId: String)
 
 @Serializable
+data class UserStatusRequest(val userIds: List<String>)
+
+/** [hasSecret] only says whether a secret is stored; the secret and its hash are never returned. */
+@Serializable
+data class UserStatus(val id: String, val registered: Boolean, val hasSecret: Boolean, val connected: Boolean)
+
+@Serializable
+data class UserStatusResponse(val users: List<UserStatus>)
+
+@Serializable
 data class SyncResponse(
     val message: String,
     val added: Int,
