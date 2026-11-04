@@ -18,6 +18,9 @@ class CachedUserRepository(
         return delegate.find(id)?.also { cache.put(id, it) }
     }
 
+    /** Always reads through: the status route must not report a secret that was just removed. */
+    override suspend fun findMany(ids: Collection<String>): List<User> = delegate.findMany(ids)
+
     override suspend fun upsert(id: String, name: String, secretHash: String?): Boolean {
         return try {
             delegate.upsert(id, name, secretHash)

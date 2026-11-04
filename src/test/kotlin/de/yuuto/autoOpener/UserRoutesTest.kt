@@ -3,8 +3,12 @@ package de.yuuto.autoOpener
 import de.yuuto.autoOpener.routes.SingleUserRequest
 import de.yuuto.autoOpener.routes.UserInput
 import de.yuuto.autoOpener.routes.UserRemoveRequest
+import de.yuuto.autoOpener.routes.UserStatus
+import de.yuuto.autoOpener.routes.UserStatusRequest
+import de.yuuto.autoOpener.routes.UserStatusResponse
 import de.yuuto.autoOpener.routes.UsersList
 import de.yuuto.autoOpener.users.UserSecrets
+import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.post
@@ -14,6 +18,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -122,5 +127,49 @@ class UserRoutesTest {
         postAsService("/users", UsersList(listOf(UserInput(OTHER_USER_ID, "bob"))))
 
         assertEquals("User removed", withTimeout(5.seconds) { session.closeReason.await() }?.message)
+    }
+
+    @Test
+    fun `status reports registration, secret and live connection per id`() = runApp {
+        users.upsert(USER_ID, "alice", UserSecrets.hash(USER_SECRET))
+        users.upsert(OTHER_USER_ID, "bob", null)
+        val unknown = "333456789012345678"
+        val jwt = userToken(secret = USER_SECRET)
+        val session = client.webSocketSession("/listen/$USER_ID") { bearerAuth(jwt) }
+        awaitConnections(USER_ID, 1)
+
+        val response = postAsService("/users/status", UserStatusRequest(listOf(USER_ID, OTHER_USER_ID, unknown, USER_ID)))
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertFalse(response.bodyAsText().contains(UserSecrets.hash(USER_SECRET)))
+        assertEquals(
+            listOf(
+                UserStatus(USER_ID, registered = true, hasSecret = true, connected = true),
+                UserStatus(OTHER_USER_ID, registered = true, hasSecret = false, connected = false),
+                UserStatus(unknown, registered = false, hasSecret = false, connected = false),
+            ),
+            response.body<UserStatusResponse>().users,
+        )
+        session.cancel()
+    }
+
+    @Test
+    fun `status requires a service token and valid ids`() = runApp {
+        val anonymous = client.post("/users/status") {
+            contentType(ContentType.Application.Json)
+            setBody(UserStatusRequest(listOf(USER_ID)))
+        }
+        assertEquals(HttpStatusCode.Unauthorized, anonymous.status)
+
+        users.upsert(USER_ID, "alice", null)
+        val asUser = client.post("/users/status") {
+            bearerAuth(userToken())
+            contentType(ContentType.Application.Json)
+            setBody(UserStatusRequest(listOf(USER_ID)))
+        }
+        assertEquals(HttpStatusCode.Unauthorized, asUser.status)
+
+        assertEquals(HttpStatusCode.BadRequest, postAsService("/users/status", UserStatusRequest(listOf("abc"))).status)
+        val tooMany = List(1001) { (100000000000000000L + it).toString() }
+        assertEquals(HttpStatusCode.BadRequest, postAsService("/users/status", UserStatusRequest(tooMany)).status)
     }
 }

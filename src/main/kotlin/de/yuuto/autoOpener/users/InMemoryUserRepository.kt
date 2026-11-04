@@ -8,6 +8,8 @@ class InMemoryUserRepository(private val clock: () -> Long = System::currentTime
 
     override suspend fun find(id: String): User? = users[id]
 
+    override suspend fun findMany(ids: Collection<String>): List<User> = ids.mapNotNull { users[it] }
+
     override suspend fun upsert(id: String, name: String, secretHash: String?): Boolean {
         val existing = users[id]
         users[id] = User(id, name, clock(), secretHash ?: existing?.secretHash)

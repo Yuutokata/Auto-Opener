@@ -50,6 +50,9 @@ class MongoUserRepository(uri: String, databaseName: String) : UserRepository, A
     override suspend fun find(id: String): User? =
         users.find(Filters.eq("id", id)).firstOrNull()?.toUser()
 
+    override suspend fun findMany(ids: Collection<String>): List<User> =
+        if (ids.isEmpty()) emptyList() else users.find(Filters.`in`("id", ids.toList())).toList().map { it.toUser() }
+
     override suspend fun upsert(id: String, name: String, secretHash: String?): Boolean {
         val updates = buildList {
             add(Updates.set("name", name))

@@ -32,6 +32,7 @@ The server refuses to start when `BOT_TOKEN`, `JWT_SECRET` or `MONGO_URI` are mi
 | `POST /users` | service | Synchronize all users (adds missing, removes absent) |
 | `POST /users/add` | service | Add or update one user; optional `secret` (64 hex characters) is stored as a hash |
 | `POST /users/remove` | service | Remove a user and disconnect their sockets |
+| `POST /users/status` | service | `{"userIds": [...]}` (at most 1000) → per ID `registered`, `hasSecret`, `connected`; never returns the secret or its hash |
 | `POST /send_message?user_id=<id>` | service | Send `{"message", "url"}`; the extension receives the bare URL |
 
 Tokens are sent as `Authorization: Bearer <jwt>` or, for browsers, in the `Sec-WebSocket-Protocol` header.
